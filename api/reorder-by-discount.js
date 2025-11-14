@@ -1,116 +1,141 @@
-const API_VERSION = process.env.API_VERSION || "2025-10";
-const SHOP = process.env.SHOP;
-const TOKEN = process.env.ADMIN_TOKEN;
-const SECRET = process.env.WB_SECRET;
-const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN || "https://www.welcomebaby.com.tr";
-const url = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
+// app/api/reorder-by-discount/route.js
+import { NextResponse } from 'next/server';
 
-const PRODUCTS_QUERY = `
-query CollectionProducts($id: ID!, $cursor: String) {
-  collection(id: $id) {
-    id
-    sortOrder
-    products(first: 250, after: $cursor) {
-      edges {
-        cursor
-        node {
+const SHOP = process.env.SHOP;                    // welcomebaby.com.tr (subdomain yok)
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
+const API_VERSION = process.env.API_VERSION || '2025-10';
+const ALLOW_ORIGIN = (process.env.ALLOW_ORIGIN || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean); // "https://welcomebaby.com.tr, https://www.welcomebaby.com.tr" gibi virgüllü değer OK
+
+const graphUrl = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
+
+function corsHeaders(origin) {
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '600',
+  };
+}
+
+export async function OPTIONS(req) {
+  const origin = req.headers.get('origin') || '';
+  const allow = ALLOW_ORIGIN.includes(origin) ? origin : '';
+  return new NextResponse(null, { headers: corsHeaders(allow) });
+}
+
+export async function POST(req) {
+  const origin = req.headers.get('origin') || '';
+  if (!ALLOW_ORIGIN.includes(origin)) {
+    return new NextResponse('forbidden origin', { status: 403, headers: corsHeaders(origin) });
+  }
+
+  try {
+    const { collectionId } = await req.json();
+    if (!collectionId) {
+      return new NextResponse(JSON.stringify({ error: 'collectionId missing' }), {
+        status: 400, headers: corsHeaders(origin)
+      });
+    }
+
+    // 1) koleksiyon ürünlerini al
+    const PRODUCTS_QUERY = `
+      query CollectionProducts($id: ID!, $cursor: String) {
+        collection(id: $id) {
           id
-          title
-          variants(first: 50) {
-            nodes { price compareAtPrice }
+          products(first: 250, after: $cursor) {
+            edges {
+              cursor
+              node {
+                id
+                title
+                variants(first: 1) {
+                  nodes {
+                    price
+                    compareAtPrice
+                  }
+                }
+              }
+            }
+            pageInfo { hasNextPage endCursor }
           }
         }
+      }`;
+
+    async function gql(query, variables) {
+      const res = await fetch(graphUrl, {
+        method: 'POST',
+        headers: {
+          'X-Shopify-Access-Token': ADMIN_TOKEN,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query, variables }),
+      });
+      const json = await res.json();
+      if (json.errors) throw new Error(JSON.stringify(json.errors));
+      return json.data;
+    }
+
+    async function fetchAllProducts(collId) {
+      let items = [];
+      let cursor = null;
+      while (true) {
+        const data = await gql(PRODUCTS_QUERY, { id: collId, cursor });
+        const edges = data?.collection?.products?.edges || [];
+        for (const e of edges) {
+          const n = e.node;
+          const v = n?.variants?.nodes?.[0] || {};
+          const price = Number(v.price || 0);
+          const cmp = Number(v.compareAtPrice || 0);
+          const discount = (cmp > price && cmp > 0) ? ((cmp - price) / cmp) * 100 : 0;
+          items.push({ id: n.id, discount });
+        }
+        const pi = data?.collection?.products?.pageInfo;
+        if (!pi?.hasNextPage) break;
+        cursor = pi.endCursor;
       }
-      pageInfo { hasNextPage endCursor }
+      return items;
     }
-  }
-}
-`;
-const SET_MANUAL_MUTATION = `
-mutation SetManual($input: CollectionInput!) {
-  collectionUpdate(input: $input) {
-    collection { id sortOrder }
-    userErrors { field message }
-  }
-}
-`;
-const REORDER_MUTATION = `
-mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
-  collectionReorderProducts(id: $id, moves: $moves) {
-    job { id }
-    userErrors { field message }
-  }
-}
-`;
 
-async function gql(query, variables) {
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { "X-Shopify-Access-Token": TOKEN, "Content-Type": "application/json" },
-    body: JSON.stringify({ query, variables })
-  });
-  const j = await r.json();
-  if (j.errors) throw new Error(JSON.stringify(j.errors, null, 2));
-  return j.data;
-}
-async function ensureManual(id) {
-  const d = await gql(PRODUCTS_QUERY, { id, cursor: null });
-  if (d?.collection?.sortOrder !== "MANUAL") {
-    const u = await gql(SET_MANUAL_MUTATION, { input: { id, sortOrder: "MANUAL" } });
-    const errs = u?.collectionUpdate?.userErrors || [];
-    if (errs.length) throw new Error(JSON.stringify(errs, null, 2));
-  }
-}
-async function fetchAllProducts(id) {
-  let out = [], cursor = null;
-  for (;;) {
-    const d = await gql(PRODUCTS_QUERY, { id, cursor });
-    for (const e of d?.collection?.products?.edges || []) {
-      let max = 0;
-      for (const v of e.node?.variants?.nodes || []) {
-        const p = Number(v?.price || 0), c = Number(v?.compareAtPrice || 0);
-        const pct = c > p ? ((c - p) / c) * 100 : 0;
-        if (pct > max) max = pct;
-      }
-      out.push({ id: e.node.id, discountPercent: max });
-    }
-    const pi = d?.collection?.products?.pageInfo;
-    if (!pi?.hasNextPage) break;
-    cursor = pi.endCursor;
-  }
-  return out;
-}
-
-export default async function handler(req, res) {
-  try {
-    res.setHeader("Vary", "Origin");
-    const origin = req.headers.origin || "";
-    if (origin === ALLOW_ORIGIN) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-WB-Secret");
-    }
-    if (req.method === "OPTIONS") return res.status(204).end();
-
-    if (!SHOP || !TOKEN) return res.status(500).json({ error: "Env missing" });
-    if (!SECRET || req.headers["x-wb-secret"] !== SECRET)
-      return res.status(401).json({ error: "Unauthorized" });
-
-    const { collectionId } = req.body || {};
-    if (!collectionId) return res.status(400).json({ error: "collectionId required" });
-
-    await ensureManual(collectionId);
     const products = await fetchAllProducts(collectionId);
-    if (!products.length) return res.json({ ok: true, moved: 0, job: null });
+    if (!products.length) {
+      return new NextResponse(JSON.stringify({ ok: true, message: 'empty collection' }), {
+        status: 200, headers: corsHeaders(origin)
+      });
+    }
 
-    const sorted = products.sort((a, b) => b.discountPercent - a.discountPercent);
+    // 2) indirime göre DESC sırala ve move listesi hazırla
+    const sorted = products.slice().sort((a, b) => b.discount - a.discount);
     const moves = sorted.map((p, i) => ({ id: p.id, newPosition: String(i + 1) }));
+
+    // 3) reorderinghttps://github.com/WB-Koray/wb-discount-sort-live/blob/main/api/reorder-by-discount.js
+    const REORDER_MUTATION = `
+      mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
+        collectionReorderProducts(id: $id, moves: $moves) {
+          job { id }
+          userErrors { field message }
+        }
+      }`;
 
     const data = await gql(REORDER_MUTATION, { id: collectionId, moves });
     const errs = data?.collectionReorderProducts?.userErrors || [];
-    if (errs.length) return res.json({ ok: false, errors: errs });
+    if (errs.length) {
+      return new NextResponse(JSON.stringify({ ok: false, errors: errs }), {
+        status: 200, headers: corsHeaders(origin)
+      });
+    }
 
-    return res.json({ ok: true, moved: moves.length, job: data?.collectionReorderProducts?.job?.id || null });
+    return new NextResponse(JSON.stringify({
+      ok: true,
+      jobId: data?.collectionReorderProducts?.job?.id || null,
+      moved: moves.length
+    }), { status: 200, headers: corsHeaders(origin) });
+
   } catch (e) {
-    return res.status(500).json({ error: e.message || String(e) });
+    return new NextResponse(JSON.stringify({ ok: false, error: String(e) }), {
+      status: 500, headers: corsHeaders(ALLOW_ORIGIN[0] || '*')
+    });
   }
 }
