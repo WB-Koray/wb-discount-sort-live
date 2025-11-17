@@ -1,191 +1,168 @@
 // api/reorder-by-discount.js
-// Serverless function: Shopify koleksiyon ürünlerini İNDİRİM ORANI'na göre yeniden sıralar.
-
-const API_VERSION   = process.env.API_VERSION || '2025-10';
-const SHOP          = process.env.SHOP;               // ör: 59fci5-cd.myshopify.com
-const TOKEN         = process.env.ADMIN_TOKEN;        // Admin API Access Token
-const SECRET        = process.env.WB_SECRET || '';    // İsteğe bağlı güvenlik anahtarı
-const ALLOW_ORIGIN  = (process.env.ALLOW_ORIGIN || 'https://www.welcomebaby.com.tr')
-  .split(',')
+const API_VERSION = process.env.API_VERSION || "2025-10";
+const SHOP = process.env.SHOP;                 // myshopify domain
+const TOKEN = process.env.ADMIN_TOKEN;         // Admin API Access Token
+const SECRET = process.env.WB_SECRET || "";    // X-WB-Secret ile gelecek
+const ALLOW_ORIGIN = (process.env.ALLOW_ORIGIN || "")
+  .split(",")
   .map(s => s.trim())
   .filter(Boolean);
 
-const GRAPHQL_URL = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
+const graphUrl = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
 
-// ---------------------- GraphQL Queries ----------------------
 const PRODUCTS_QUERY = `
-  query CollectionProducts($id: ID!, $cursor: String) {
-    collection(id: $id) {
-      id
-      sortOrder
-      products(first: 250, after: $cursor) {
-        edges {
-          cursor
-          node {
-            id
-            title
-            variants(first: 50) {
-              nodes { price compareAtPrice }
-            }
-          }
+query CollectionProducts($id: ID!, $cursor: String) {
+  collection(id: $id) {
+    id
+    sortOrder
+    products(first: 250, after: $cursor) {
+      edges {
+        cursor
+        node {
+          id
+          variants(first: 50) { nodes { price compareAtPrice } }
         }
-        pageInfo { hasNextPage endCursor }
       }
+      pageInfo { hasNextPage endCursor }
     }
   }
+}
 `;
 
 const SET_MANUAL_MUTATION = `
-  mutation SetManual($input: CollectionInput!) {
-    collectionUpdate(input: $input) {
-      collection { id sortOrder }
-      userErrors { field message }
-    }
+mutation SetManual($input: CollectionInput!) {
+  collectionUpdate(input: $input) {
+    collection { id sortOrder }
+    userErrors { field message }
   }
+}
 `;
 
 const REORDER_MUTATION = `
-  mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
-    collectionReorderProducts(id: $id, moves: $moves) {
-      job { id }
-      userErrors { field message }
-    }
+mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
+  collectionReorderProducts(id: $id, moves: $moves) {
+    job { id }
+    userErrors { field message }
   }
+}
 `;
 
-// ---------------------- Helpers ----------------------
-function setCors(res, origin) {
-  res.setHeader('Vary', 'Origin');
-  if (origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  // Özel header'ı mutlaka izin listesine ekleyelim:
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-WB-Secret');
-  res.setHeader('Access-Control-Max-Age', '600');
-}
-
 async function gql(query, variables) {
-  const r = await fetch(GRAPHQL_URL, {
-    method: 'POST',
+  const r = await fetch(graphUrl, {
+    method: "POST",
     headers: {
-      'X-Shopify-Access-Token': TOKEN,
-      'Content-Type': 'application/json'
+      "X-Shopify-Access-Token": TOKEN,
+      "Content-Type": "application/json"
     },
     body: JSON.stringify({ query, variables })
   });
   const j = await r.json();
-  if (j.errors) {
-    throw new Error(JSON.stringify(j.errors, null, 2));
-  }
+  if (j.errors) throw new Error(`GraphQL: ${JSON.stringify(j.errors)}`);
   return j.data;
 }
 
-async function ensureManual(collectionId) {
-  const d = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
-  const order = d?.collection?.sortOrder;
-  if (order !== 'MANUAL') {
-    const u = await gql(SET_MANUAL_MUTATION, { input: { id: collectionId, sortOrder: 'MANUAL' } });
-    const errs = u?.collectionUpdate?.userErrors || [];
-    if (errs.length) {
-      throw new Error(JSON.stringify(errs, null, 2));
-    }
-  }
+function corsHeaders(origin) {
+  return {
+    "Access-Control-Allow-Origin": origin || "",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-WB-Secret",
+    "Access-Control-Max-Age": "600",
+    Vary: "Origin"
+  };
 }
 
-async function fetchAllProducts(collectionId) {
-  let out = [];
-  let cursor = null;
-
-  // sayfalama
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const d = await gql(PRODUCTS_QUERY, { id: collectionId, cursor });
-    const edges = d?.collection?.products?.edges || [];
-
-    for (const e of edges) {
-      let max = 0;
-      const variants = e?.node?.variants?.nodes || [];
-      for (const v of variants) {
-        const p = Number(v?.price || 0);
-        const c = Number(v?.compareAtPrice || 0);
-        const pct = c > p ? ((c - p) / c) * 100 : 0;
-        if (pct > max) max = pct;
-      }
-      out.push({ id: e.node.id, discountPercent: max });
-    }
-
-    const pi = d?.collection?.products?.pageInfo;
-    if (!pi?.hasNextPage) break;
-    cursor = pi.endCursor;
-  }
-
-  return out;
-}
-
-// ---------------------- Handler ----------------------
 export default async function handler(req, res) {
   try {
-    const origin = req.headers.origin || '';
-    const originAllowed = ALLOW_ORIGIN.includes(origin);
+    const origin = req.headers.origin || "";
+    const allow = ALLOW_ORIGIN.length ? ALLOW_ORIGIN.includes(origin) : true;
 
-    // CORS
-    setCors(res, originAllowed ? origin : '');
-
-    // Preflight
-    if (req.method === 'OPTIONS') {
-      return res.status(204).end();
+    // CORS preflight
+    if (req.method === "OPTIONS") {
+      return res.writeHead(204, corsHeaders(allow ? origin : "")).end();
     }
 
     // Temel env kontrolleri
     if (!SHOP || !TOKEN) {
-      return res.status(500).json({ ok: false, error: 'Missing environment variables (SHOP / ADMIN_TOKEN).' });
+      return res.writeHead(500, corsHeaders(allow ? origin : ""))
+        .end(JSON.stringify({ error: "Missing SHOP / ADMIN_TOKEN" }));
     }
 
-    // Origin kontrolü
-    if (!originAllowed) {
-      return res.status(403).json({ ok: false, error: 'forbidden origin' });
+    // Origin ve Secret kontrolü
+    if (!allow) {
+      return res.writeHead(403, corsHeaders("")).end(JSON.stringify({ error: "forbidden origin" }));
+    }
+    if (SECRET && req.headers["x-wb-secret"] !== SECRET) {
+      return res.writeHead(401, corsHeaders(origin)).end(JSON.stringify({ error: "unauthorized" }));
     }
 
-    // Secret kontrolü (SECRET tanımlıysa zorunlu)
-    if (SECRET) {
-      const incoming = req.headers['x-wb-secret'] || '';
-      if (incoming !== SECRET) {
-        return res.status(401).json({ ok: false, error: 'unauthorized' });
+    // Body al
+    const body = typeof req.body === "object" && req.body
+      ? req.body
+      : JSON.parse(await new Promise((ok) => {
+          let data = "";
+          req.on("data", (c) => (data += c));
+          req.on("end", () => ok(data || "{}"));
+        }));
+
+    const collectionId = body.collectionId;
+    if (!collectionId) {
+      return res.writeHead(400, corsHeaders(origin)).end(JSON.stringify({ error: "collectionId required" }));
+    }
+
+    // Koleksiyonu MANUAL yap
+    const first = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
+    if (first?.collection?.sortOrder !== "MANUAL") {
+      const upd = await gql(SET_MANUAL_MUTATION, { input: { id: collectionId, sortOrder: "MANUAL" } });
+      const errs = upd?.collectionUpdate?.userErrors || [];
+      if (errs.length) {
+        return res.writeHead(500, corsHeaders(origin)).end(JSON.stringify({ ok: false, errors: errs }));
       }
     }
 
-    // Body
-    const { collectionId } = req.body || {};
-    if (!collectionId) {
-      return res.status(400).json({ ok: false, error: 'collectionId required' });
+    // Tüm ürünleri çek + max indirim oranını hesapla
+    let edges = first?.collection?.products?.edges || [];
+    let pageInfo = first?.collection?.products?.pageInfo;
+    const items = [];
+
+    const pushEdges = (arr) => {
+      for (const e of arr) {
+        let maxPct = 0;
+        for (const v of e.node?.variants?.nodes || []) {
+          const p = Number(v?.price || 0);
+          const c = Number(v?.compareAtPrice || 0);
+          const pct = c > p ? ((c - p) / c) * 100 : 0;
+          if (pct > maxPct) maxPct = pct;
+        }
+        items.push({ id: e.node.id, discountPercent: maxPct });
+      }
+    };
+
+    pushEdges(edges);
+    while (pageInfo?.hasNextPage) {
+      const n = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: pageInfo.endCursor });
+      pushEdges(n?.collection?.products?.edges || []);
+      pageInfo = n?.collection?.products?.pageInfo;
     }
 
-    // Koleksiyon MANUAL değilse MANUAL yap
-    await ensureManual(collectionId);
-
-    // Ürünleri çek ve indirim yüzdesine göre sırala
-    const items = await fetchAllProducts(collectionId);
     if (!items.length) {
-      return res.json({ ok: true, moved: 0, job: null });
+      return res.writeHead(200, corsHeaders(origin)).end(JSON.stringify({ ok: true, moved: 0 }));
     }
 
-    const sorted = items.sort((a, b) => b.discountPercent - a.discountPercent);
-    const moves = sorted.map((p, i) => ({ id: p.id, newPosition: String(i + 1) }));
+    // Büyükten küçüğe sırala ve pozisyon hareketlerini hazırla
+    const moves = items
+      .sort((a, b) => b.discountPercent - a.discountPercent)
+      .map((p, idx) => ({ id: p.id, newPosition: String(idx + 1) }));
 
-    // Reorder
-    const data = await gql(REORDER_MUTATION, { id: collectionId, moves });
-    const errs = data?.collectionReorderProducts?.userErrors || [];
-    if (errs.length) {
-      return res.json({ ok: false, errors: errs });
-    }
+    const result = await gql(REORDER_MUTATION, { id: collectionId, moves });
+    const rErrors = result?.collectionReorderProducts?.userErrors || [];
+    const jobId = result?.collectionReorderProducts?.job?.id || null;
 
-    return res.json({
-      ok: true,
-      moved: moves.length,
-      job: data?.collectionReorderProducts?.job?.id || null
-    });
+    return res
+      .writeHead(200, corsHeaders(origin))
+      .end(JSON.stringify({ ok: rErrors.length === 0, moved: moves.length, errors: rErrors, job: jobId }));
   } catch (e) {
-    return res.status(500).json({ ok: false, error: e?.message || String(e) });
+    return res
+      .writeHead(500, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: e?.message || String(e) }));
   }
 }
