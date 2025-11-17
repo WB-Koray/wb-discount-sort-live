@@ -1,5 +1,4 @@
 // api/reorder-by-discount.js
-export const config = { runtime: 'nodejs22.x' };
 const API_VERSION = process.env.API_VERSION || "2025-10";
 const SHOP = process.env.SHOP;                 // myshopify domain
 const TOKEN = process.env.ADMIN_TOKEN;         // Admin API Access Token
