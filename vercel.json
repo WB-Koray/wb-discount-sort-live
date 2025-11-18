@@ -2,8 +2,8 @@
   "version": 2,
   "functions": {
     "api/reorder-by-discount/route.js": {
-      "runtime": "nodejs20.x",  // Node.js sürümünü 20.x olarak belirtiyoruz
-      "maxDuration": 10         // Fonksiyonun maksimum çalışma süresi
+      "runtime": "nodejs20.x",
+      "maxDuration": 10
     }
   }
 }
