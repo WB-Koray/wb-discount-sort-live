@@ -1,6 +1,6 @@
 {
   "name": "wb-discount-sort-live",
-  "version": "1.0.0"
+  "version": "1.0.0",
   "private": true,
   "engines": {
     "node": "20.x"  // Node.js 20.x sürümünü kullanıyoruz
