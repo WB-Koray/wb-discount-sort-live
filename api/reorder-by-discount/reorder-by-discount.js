@@ -1,11 +1,25 @@
+// CORS helper - EN BAŞTA
+function setCorsHeaders(res, origin) {
+  const allowedOrigins = [
+    'https://welcomebaby.com.tr',
+    'https://www.welcomebaby.com.tr'
+  ];
+  
+  const isAllowed = allowedOrigins.includes(origin);
+  
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : allowedOrigins,[object Object],);
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, X-WB-Secret');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  
+  return res;
+}
+
 const API_VERSION = process.env.API_VERSION || "2025-10";
 const SHOP = process.env.SHOP;
 const TOKEN = process.env.ADMIN_TOKEN;
 const SECRET = process.env.WB_SECRET || "";
-const ALLOW_ORIGIN = (process.env.ALLOW_ORIGIN || "")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
 
 const graphUrl = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
 
@@ -80,70 +94,44 @@ async function gql(query, variables) {
 }
 
 export default async function handler(req, res) {
-  // CORS - Her durumda set et
   const origin = req.headers.origin || "";
-  const allowedOrigins = ALLOW_ORIGIN.length 
-    ? ALLOW_ORIGIN 
-    : ["https://welcomebaby.com.tr", "https://www.welcomebaby.com.tr"];
   
-  const isAllowed = allowedOrigins.some(o => o === origin) || !ALLOW_ORIGIN.length;
-  
-  // CORS Headers
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Origin", isAllowed ? origin : "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-WB-Secret, X-Requested-With, Accept");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  res.setHeader("Vary", "Origin");
+  // CORS - HER DURUMDA
+  setCorsHeaders(res, origin);
 
   // OPTIONS preflight
   if (req.method === "OPTIONS") {
-    res.status(200).end();
-    return;
+    return res.status(200).end();
   }
 
-  // Sadece POST kabul et
+  // Sadece POST
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+    return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    // Env kontrolleri
+    // Env check
     if (!SHOP || !TOKEN) {
-      res.status(500).json({ error: "Missing SHOP / ADMIN_TOKEN" });
-      return;
+      return res.status(500).json({ error: "Missing SHOP / ADMIN_TOKEN" });
     }
 
-    // Secret kontrolü
+    // Secret check
     if (SECRET && req.headers["x-wb-secret"] !== SECRET) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
     // Body parse
-    let body;
-    if (typeof req.body === "string") {
-      body = JSON.parse(req.body);
-    } else if (typeof req.body === "object") {
-      body = req.body;
-    } else {
-      // Manuel parse
-      body = await new Promise((resolve) => {
-        let data = "";
-        req.on("data", chunk => data += chunk);
-        req.on("end", () => resolve(JSON.parse(data || "{}")));
-      });
+    let body = req.body;
+    if (typeof body === "string") {
+      body = JSON.parse(body);
     }
 
-    const collectionId = body.collectionId;
-
+    const collectionId = body?.collectionId;
     if (!collectionId) {
-      res.status(400).json({ error: "collectionId required" });
-      return;
+      return res.status(400).json({ error: "collectionId required" });
     }
 
-    // Koleksiyonu MANUAL yap
+    // Set to MANUAL
     const first = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
     
     if (first?.collection?.sortOrder !== "MANUAL") {
@@ -152,12 +140,11 @@ export default async function handler(req, res) {
       });
       const errs = upd?.collectionUpdate?.userErrors || [];
       if (errs.length) {
-        res.status(500).json({ ok: false, errors: errs });
-        return;
+        return res.status(500).json({ ok: false, errors: errs });
       }
     }
 
-    // Tüm ürünleri çek
+    // Fetch all products
     let edges = first?.collection?.products?.edges || [];
     let pageInfo = first?.collection?.products?.pageInfo;
     const items = [];
@@ -187,11 +174,10 @@ export default async function handler(req, res) {
     }
 
     if (!items.length) {
-      res.status(200).json({ ok: true, moved: 0 });
-      return;
+      return res.status(200).json({ ok: true, moved: 0 });
     }
 
-    // Sırala ve reorder
+    // Sort and reorder
     const moves = items
       .sort((a, b) => b.discountPercent - a.discountPercent)
       .map((p, idx) => ({ id: p.id, newPosition: String(idx + 1) }));
@@ -200,7 +186,7 @@ export default async function handler(req, res) {
     const rErrors = result?.collectionReorderProducts?.userErrors || [];
     const jobId = result?.collectionReorderProducts?.job?.id || null;
 
-    res.status(200).json({
+    return res.status(200).json({
       ok: rErrors.length === 0,
       moved: moves.length,
       errors: rErrors,
@@ -209,6 +195,6 @@ export default async function handler(req, res) {
 
   } catch (e) {
     console.error("API Error:", e);
-    res.status(500).json({ error: e?.message || String(e) });
+    return res.status(500).json({ error: e?.message || String(e) });
   }
 }
