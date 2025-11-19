@@ -120,7 +120,7 @@ async function gql(query, variables) {
 // ============================================
 // Main Handler Function
 // ============================================
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const origin = req.headers.origin || "";
   
   setCorsHeaders(res, origin);
@@ -265,4 +265,4 @@ export default async function handler(req, res) {
       stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined
     });
   }
-}
+};
