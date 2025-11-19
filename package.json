@@ -1,20 +1,35 @@
 {
   "name": "wb-discount-sort-live",
   "version": "1.0.0",
-  "description": "Shopify product sorting by discount rate",
+  "description": "Shopify product sorting by discount rate API",
   "main": "api/reorder-by-discount.js",
   "scripts": {
     "dev": "vercel dev",
-    "build": "echo 'No build step required'",
+    "build": "echo 'Serverless functions - no build required'",
     "start": "vercel dev"
   },
   "dependencies": {
     "node-fetch": "^2.7.0"
   },
-  "engines": {
-    "node": "22.x"
+  "devDependencies": {
+    "vercel": "^33.0.0"
   },
-  "keywords": ["shopify", "discount", "api", "vercel"],
+  "engines": {
+    "node": "22.x",
+    "npm": ">=10.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WB-Koray/wb-discount-sort-live"
+  },
+  "keywords": [
+    "shopify",
+    "discount",
+    "sorting",
+    "api",
+    "vercel",
+    "serverless"
+  ],
   "author": "WB-Koray",
   "license": "MIT"
 }
