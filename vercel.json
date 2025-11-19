@@ -7,7 +7,7 @@
   },
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/api/reorder-by-discount",
       "headers": [
         {
           "key": "Access-Control-Allow-Credentials",
