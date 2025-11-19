@@ -1,250 +1,229 @@
-function setCorsHeaders(res, origin) {
-  const allowedOrigins = [
-    'https://welcomebaby.com.tr',
-    'https://www.welcomebaby.com.tr'
-  ];
-  
-  const isAllowed = allowedOrigins.includes(origin);
-  
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : allowedOrigins,[object Object],);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, X-WB-Secret');
-  res.setHeader('Access-Control-Max-Age', '86400');
-  
-  return res;
-}
+// api/reorder-by-discount.js
 
 const API_VERSION = process.env.API_VERSION || "2025-10";
-const SHOP = process.env.SHOP;
-const TOKEN = process.env.ADMIN_TOKEN;
+const SHOP = process.env.SHOP;          // myshopify domain (xxx.myshopify.com)
+const TOKEN = process.env.ADMIN_TOKEN;  // Admin API Access Token
 const SECRET = process.env.WB_SECRET || "";
+const ALLOW_ORIGIN = (process.env.ALLOW_ORIGIN || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
 
 const graphUrl = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
 
 const PRODUCTS_QUERY = `
-  query CollectionProducts($id: ID!, $cursor: String) {
-    collection(id: $id) {
-      id
-      sortOrder
-      products(first: 250, after: $cursor) {
-        edges {
-          cursor
-          node {
-            id
-            variants(first: 50) {
-              nodes {
-                price
-                compareAtPrice
-              }
+query CollectionProducts($id: ID!, $cursor: String) {
+  collection(id: $id) {
+    id
+    sortOrder
+    products(first: 250, after: $cursor) {
+      edges {
+        cursor
+        node {
+          id
+          variants(first: 50) {
+            nodes {
+              price
+              compareAtPrice
             }
           }
         }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
   }
+}
 `;
 
 const SET_MANUAL_MUTATION = `
-  mutation SetManual($input: CollectionInput!) {
-    collectionUpdate(input: $input) {
-      collection {
-        id
-        sortOrder
-      }
-      userErrors {
-        field
-        message
-      }
+mutation SetManual($input: CollectionInput!) {
+  collectionUpdate(input: $input) {
+    collection {
+      id
+      sortOrder
+    }
+    userErrors {
+      field
+      message
     }
   }
+}
 `;
 
 const REORDER_MUTATION = `
-  mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
-    collectionReorderProducts(id: $id, moves: $moves) {
-      job {
-        id
-      }
-      userErrors {
-        field
-        message
-      }
+mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
+  collectionReorderProducts(id: $id, moves: $moves) {
+    job {
+      id
+    }
+    userErrors {
+      field
+      message
     }
   }
+}
 `;
 
 async function gql(query, variables) {
-  try {
-    const response = await fetch(graphUrl, {
-      method: "POST",
-      headers: {
-        "X-Shopify-Access-Token": TOKEN,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ query, variables })
-    });
-    
-    const json = await response.json();
-    
-    if (json.errors) {
-      throw new Error(`GraphQL Error: ${JSON.stringify(json.errors)}`);
-    }
-    
-    return json.data;
-  } catch (error) {
-    console.error("GraphQL Request Failed:", error);
-    throw error;
+  const r = await fetch(graphUrl, {
+    method: "POST",
+    headers: {
+      "X-Shopify-Access-Token": TOKEN,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  const j = await r.json();
+  if (j.errors) {
+    throw new Error(`GraphQL: ${JSON.stringify(j.errors)}`);
   }
+  return j.data;
 }
 
-module.exports = async function handler(req, res) {
-  const origin = req.headers.origin || "";
-  
-  setCorsHeaders(res, origin);
+function corsHeaders(origin) {
+  return {
+    "Access-Control-Allow-Origin": origin || "",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, X-WB-Secret",
+    "Access-Control-Max-Age": "600",
+    Vary: "Origin"
+  };
+}
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
-
+// Vercel Node.js Function (v2 style)
+export default async function handler(req, res) {
   try {
+    const origin = req.headers.origin || "";
+    const allow = ALLOW_ORIGIN.length ? ALLOW_ORIGIN.includes(origin) : true;
+
+    // CORS preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, corsHeaders(allow ? origin : "")).end();
+      return;
+    }
+
+    // Temel env kontrolleri
     if (!SHOP || !TOKEN) {
-      console.error("Missing environment variables:", { SHOP: !!SHOP, TOKEN: !!TOKEN });
-      return res.status(500).json({ 
-        error: "Server configuration error",
-        details: "Missing SHOP or ADMIN_TOKEN environment variables"
-      });
+      res
+        .writeHead(500, corsHeaders(allow ? origin : ""))
+        .end(JSON.stringify({ error: "Missing SHOP / ADMIN_TOKEN" }));
+      return;
+    }
+
+    // Origin ve Secret kontrolü
+    if (!allow) {
+      res
+        .writeHead(403, corsHeaders(""))
+        .end(JSON.stringify({ error: "forbidden origin" }));
+      return;
     }
 
     if (SECRET && req.headers["x-wb-secret"] !== SECRET) {
-      return res.status(401).json({ error: "Unauthorized" });
+      res
+        .writeHead(401, corsHeaders(origin))
+        .end(JSON.stringify({ error: "unauthorized" }));
+      return;
     }
 
-    let body = req.body;
-    if (typeof body === "string") {
-      try {
-        body = JSON.parse(body);
-      } catch (e) {
-        return res.status(400).json({ error: "Invalid JSON in request body" });
-      }
-    }
+    // Body al
+    const body =
+      typeof req.body === "object" && req.body
+        ? req.body
+        : JSON.parse(
+            await new Promise((ok) => {
+              let data = "";
+              req.on("data", (c) => (data += c));
+              req.on("end", () => ok(data || "{}"));
+            })
+          );
 
-    const collectionId = body?.collectionId;
+    const collectionId = body.collectionId;
     if (!collectionId) {
-      return res.status(400).json({ error: "collectionId is required" });
+      res
+        .writeHead(400, corsHeaders(origin))
+        .end(JSON.stringify({ error: "collectionId required" }));
+      return;
     }
 
-    console.log("Processing collection:", collectionId);
+    // Koleksiyonu MANUAL yap
+    const first = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
 
-    const firstPage = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
-    
-    if (firstPage?.collection?.sortOrder !== "MANUAL") {
-      console.log("Setting collection to MANUAL sort order");
-      const updateResult = await gql(SET_MANUAL_MUTATION, {
+    if (first?.collection?.sortOrder !== "MANUAL") {
+      const upd = await gql(SET_MANUAL_MUTATION, {
         input: { id: collectionId, sortOrder: "MANUAL" }
       });
-      
-      const errors = updateResult?.collectionUpdate?.userErrors || [];
-      if (errors.length) {
-        console.error("Failed to set MANUAL sort order:", errors);
-        return res.status(500).json({ ok: false, errors });
+      const errs = upd?.collectionUpdate?.userErrors || [];
+      if (errs.length) {
+        res
+          .writeHead(500, corsHeaders(origin))
+          .end(JSON.stringify({ ok: false, errors: errs }));
+        return;
       }
     }
 
-    let edges = firstPage?.collection?.products?.edges || [];
-    let pageInfo = firstPage?.collection?.products?.pageInfo;
+    // Tüm ürünleri çek + max indirim oranını hesapla
+    let edges = first?.collection?.products?.edges || [];
+    let pageInfo = first?.collection?.products?.pageInfo;
     const items = [];
 
-    const processEdges = (edgeArray) => {
-      for (const edge of edgeArray) {
-        let maxDiscountPercent = 0;
-        
-        for (const variant of edge.node?.variants?.nodes || []) {
-          const price = Number(variant?.price || 0);
-          const compareAtPrice = Number(variant?.compareAtPrice || 0);
-          
-          if (compareAtPrice > price) {
-            const discountPercent = ((compareAtPrice - price) / compareAtPrice) * 100;
-            if (discountPercent > maxDiscountPercent) {
-              maxDiscountPercent = discountPercent;
-            }
-          }
+    const pushEdges = (arr) => {
+      for (const e of arr) {
+        let maxPct = 0;
+        for (const v of e.node?.variants?.nodes || []) {
+          const p = Number(v?.price || 0);
+          const c = Number(v?.compareAtPrice || 0);
+          const pct = c > p ? ((c - p) / c) * 100 : 0;
+          if (pct > maxPct) maxPct = pct;
         }
-        
-        items.push({ 
-          id: edge.node.id, 
-          discountPercent: maxDiscountPercent 
-        });
+        items.push({ id: e.node.id, discountPercent: maxPct });
       }
     };
 
-    processEdges(edges);
-
+    pushEdges(edges);
     while (pageInfo?.hasNextPage) {
-      console.log("Fetching next page...");
-      const nextPage = await gql(PRODUCTS_QUERY, {
+      const n = await gql(PRODUCTS_QUERY, {
         id: collectionId,
         cursor: pageInfo.endCursor
       });
-      
-      const nextEdges = nextPage?.collection?.products?.edges || [];
-      processEdges(nextEdges);
-      pageInfo = nextPage?.collection?.products?.pageInfo;
+      pushEdges(n?.collection?.products?.edges || []);
+      pageInfo = n?.collection?.products?.pageInfo;
     }
-
-    console.log(`Total products found: ${items.length}`);
 
     if (!items.length) {
-      return res.status(200).json({ 
-        ok: true, 
-        moved: 0,
-        message: "No products found in collection"
-      });
+      res
+        .writeHead(200, corsHeaders(origin))
+        .end(JSON.stringify({ ok: true, moved: 0 }));
+      return;
     }
 
-    const sortedItems = items.sort((a, b) => b.discountPercent - a.discountPercent);
-    
-    const moves = sortedItems.map((product, index) => ({
-      id: product.id,
-      newPosition: String(index + 1)
-    }));
+    // Büyükten küçüğe sırala ve pozisyon hareketlerini hazırla
+    const moves = items
+      .sort((a, b) => b.discountPercent - a.discountPercent)
+      .map((p, idx) => ({
+        id: p.id,
+        newPosition: String(idx + 1)
+      }));
 
-    console.log(`Reordering ${moves.length} products...`);
+    const result = await gql(REORDER_MUTATION, { id: collectionId, moves });
+    const rErrors = result?.collectionReorderProducts?.userErrors || [];
+    const jobId = result?.collectionReorderProducts?.job?.id || null;
 
-    const reorderResult = await gql(REORDER_MUTATION, { 
-      id: collectionId, 
-      moves 
-    });
-    
-    const reorderErrors = reorderResult?.collectionReorderProducts?.userErrors || [];
-    const jobId = reorderResult?.collectionReorderProducts?.job?.id || null;
-
-    if (reorderErrors.length) {
-      console.error("Reorder errors:", reorderErrors);
-    } else {
-      console.log("Reorder successful, job ID:", jobId);
-    }
-
-    return res.status(200).json({
-      ok: reorderErrors.length === 0,
-      moved: moves.length,
-      errors: reorderErrors,
-      job: jobId
-    });
-
-  } catch (error) {
-    console.error("API Error:", error);
-    return res.status(500).json({ 
-      error: error?.message || String(error),
-      stack: process.env.NODE_ENV === 'development' ? error?.stack : undefined
-    });
+    res
+      .writeHead(200, corsHeaders(origin))
+      .end(
+        JSON.stringify({
+          ok: rErrors.length === 0,
+          moved: moves.length,
+          errors: rErrors,
+          job: jobId
+        })
+      );
+  } catch (e) {
+    res
+      .writeHead(500, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: e?.message || String(e) }));
   }
-};
+}
