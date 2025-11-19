@@ -1,8 +1,6 @@
-// api/reorder-by-discount.js
+// Node.js built-in https modülünü kullanacağız (node-fetch yerine)
+const https = require('https');
 
-const fetch = require('node-fetch');
-
-// Environment variables kontrolü
 function checkEnvironment() {
   const domain = process.env.SHOPIFY_DOMAIN;
   const token = process.env.SHOPIFY_ACCESS_TOKEN;
@@ -21,27 +19,47 @@ function checkEnvironment() {
   return { error: false };
 }
 
-// Shopify GraphQL API çağrısı
-async function shopifyGraphQL(query) {
-  const url = `https://${process.env.SHOPIFY_DOMAIN}/admin/api/2024-01/graphql.json`;
-  
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
-    },
-    body: JSON.stringify({ query }),
+function shopifyGraphQL(query) {
+  return new Promise((resolve, reject) => {
+    const data = JSON.stringify({ query });
+    
+    const options = {
+      hostname: process.env.SHOPIFY_DOMAIN,
+      path: '/admin/api/2024-01/graphql.json',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': data.length,
+        'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let body = '';
+      
+      res.on('data', (chunk) => {
+        body += chunk;
+      });
+      
+      res.on('end', () => {
+        try {
+          const json = JSON.parse(body);
+          resolve(json);
+        } catch (error) {
+          reject(new Error(`Failed to parse JSON: ${error.message}`));
+        }
+      });
+    });
+
+    req.on('error', (error) => {
+      reject(error);
+    });
+
+    req.write(data);
+    req.end();
   });
-
-  if (!response.ok) {
-    throw new Error(`Shopify API Error: ${response.status} ${response.statusText}`);
-  }
-
-  return await response.json();
 }
 
-// İndirim oranını hesapla
 function calculateDiscount(product) {
   const variant = product.variants.edges,[object Object],?.node;
   if (!variant) return 0;
@@ -54,7 +72,6 @@ function calculateDiscount(product) {
   return ((compareAtPrice - price) / compareAtPrice) * 100;
 }
 
-// Ürünleri çek
 async function fetchProducts() {
   const query = `
     {
@@ -87,7 +104,6 @@ async function fetchProducts() {
   return response.data.products.edges;
 }
 
-// Ana handler fonksiyonu
 module.exports = async function handler(req, res) {
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -99,7 +115,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    // Environment variables kontrolü
+    // Environment check
     const envCheck = checkEnvironment();
     if (envCheck.error) {
       return res.status(500).json(envCheck);
@@ -108,7 +124,7 @@ module.exports = async function handler(req, res) {
     console.log('Fetching products from Shopify...');
     const products = await fetchProducts();
 
-    // İndirim oranlarını hesapla
+    // Calculate discounts
     const productsWithDiscount = products.map(({ node }) => ({
       id: node.id,
       title: node.title,
@@ -118,12 +134,11 @@ module.exports = async function handler(req, res) {
       compareAtPrice: node.variants.edges,[object Object],?.node.compareAtPrice,
     }));
 
-    // İndirim oranına göre azalan sırada sırala
+    // Sort by discount (highest first)
     productsWithDiscount.sort((a, b) => b.discount - a.discount);
 
     console.log(`✓ Sorted ${productsWithDiscount.length} products`);
 
-    // Sonuçları döndür
     return res.status(200).json({
       success: true,
       count: productsWithDiscount.length,
@@ -138,6 +153,7 @@ module.exports = async function handler(req, res) {
       success: false,
       error: error.message,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      timestamp: new Date().toISOString(),
     });
   }
 };
