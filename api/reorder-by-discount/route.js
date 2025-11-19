@@ -1,7 +1,7 @@
 const API_VERSION = process.env.API_VERSION || "2025-10";
-const SHOP = process.env.SHOP; // myshopify domain
-const TOKEN = process.env.ADMIN_TOKEN; // Admin API Access Token
-const SECRET = process.env.WB_SECRET || ""; // X-WB-Secret ile gelecek
+const SHOP = process.env.SHOP;
+const TOKEN = process.env.ADMIN_TOKEN;
+const SECRET = process.env.WB_SECRET || "";
 const ALLOW_ORIGIN = (process.env.ALLOW_ORIGIN || "")
   .split(",")
   .map(s => s.trim())
@@ -79,48 +79,49 @@ async function gql(query, variables) {
   return j.data;
 }
 
-function corsHeaders(origin) {
-  return {
-    "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-WB-Secret",
-    "Access-Control-Max-Age": "600",
-    "Access-Control-Allow-Credentials": "true"
-  };
-}
-
 export default async function handler(req, res) {
+  // CORS headers'ı EN BAŞTA set et
   const origin = req.headers.origin || "";
-  const allow = ALLOW_ORIGIN.length ? ALLOW_ORIGIN.includes(origin) : true;
+  const allowedOrigins = ALLOW_ORIGIN.length 
+    ? ALLOW_ORIGIN 
+    : ["https://welcomebaby.com.tr", "https://www.welcomebaby.com.tr"];
+  
+  const isAllowed = allowedOrigins.includes(origin) || ALLOW_ORIGIN.length === 0;
+  
+  // Set CORS headers
+  res.setHeader("Access-Control-Allow-Origin", isAllowed ? origin : allowedOrigins,[object Object],);
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-WB-Secret, X-Requested-With");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
 
-  // CORS headers'ı her durumda set et
-  const headers = corsHeaders(allow ? origin : "*");
-  Object.entries(headers).forEach(([key, value]) => {
-    res.setHeader(key, value);
-  });
+  // OPTIONS preflight - EN ÖNCELİKLİ
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  // Sadece POST kabul et
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
-    // CORS preflight
-    if (req.method === "OPTIONS") {
-      return res.status(204).end();
-    }
-
-    // Temel env kontrolleri
+    // Env kontrolleri
     if (!SHOP || !TOKEN) {
       return res.status(500).json({ error: "Missing SHOP / ADMIN_TOKEN" });
     }
 
     // Origin kontrolü
-    if (!allow) {
-      return res.status(403).json({ error: "forbidden origin" });
+    if (!isAllowed && ALLOW_ORIGIN.length > 0) {
+      return res.status(403).json({ error: "Forbidden origin" });
     }
 
     // Secret kontrolü
     if (SECRET && req.headers["x-wb-secret"] !== SECRET) {
-      return res.status(401).json({ error: "unauthorized" });
+      return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // Body al - Next.js/Vercel otomatik parse eder
+    // Body parse
     const body = req.body || {};
     const collectionId = body.collectionId;
 
@@ -141,7 +142,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // Tüm ürünleri çek + max indirim oranını hesapla
+    // Tüm ürünleri çek
     let edges = first?.collection?.products?.edges || [];
     let pageInfo = first?.collection?.products?.pageInfo;
     const items = [];
@@ -174,7 +175,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true, moved: 0 });
     }
 
-    // Büyükten küçüğe sırala ve pozisyon hareketlerini hazırla
+    // Sırala ve reorder
     const moves = items
       .sort((a, b) => b.discountPercent - a.discountPercent)
       .map((p, idx) => ({ id: p.id, newPosition: String(idx + 1) }));
@@ -191,6 +192,7 @@ export default async function handler(req, res) {
     });
 
   } catch (e) {
+    console.error("API Error:", e);
     return res.status(500).json({ error: e?.message || String(e) });
   }
 }
