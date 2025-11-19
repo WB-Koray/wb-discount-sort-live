@@ -4,7 +4,7 @@ const REQUEST_TIMEOUT = 30000;
 
 function checkEnvironment() {
   const domain = process.env.SHOPIFY_DOMAIN;
-  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+  const token = process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN;
   
   if (!domain || !token) {
     return {
@@ -12,18 +12,7 @@ function checkEnvironment() {
       message: 'Missing environment variables',
       details: {
         SHOPIFY_DOMAIN: domain ? '✓ Set' : '✗ Missing',
-        SHOPIFY_ACCESS_TOKEN: token ? '✓ Set' : '✗ Missing'
-      }
-    };
-  }
-  
-  if (domain.includes('http://') || domain.includes('https://') || domain.endsWith('/')) {
-    return {
-      error: true,
-      message: 'Invalid SHOPIFY_DOMAIN format',
-      details: {
-        current: domain,
-        expected: 'your-store.myshopify.com (without https:// or trailing /)'
+        SHOPIFY_STOREFRONT_ACCESS_TOKEN: token ? '✓ Set' : '✗ Missing'
       }
     };
   }
@@ -31,18 +20,17 @@ function checkEnvironment() {
   return { error: false };
 }
 
-function shopifyGraphQL(query) {
+function shopifyStorefrontQuery(query) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({ query });
     
     const options = {
       hostname: process.env.SHOPIFY_DOMAIN,
-      path: '/admin/api/2024-10/graphql.json',
+      path: '/api/2024-10/graphql.json',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data),
-        'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+        'X-Shopify-Storefront-Access-Token': process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN,
       },
       timeout: REQUEST_TIMEOUT
     };
@@ -87,8 +75,8 @@ function shopifyGraphQL(query) {
 function calculateDiscount(variant) {
   if (!variant) return 0;
 
-  const price = parseFloat(variant.price || 0);
-  const compareAtPrice = parseFloat(variant.compareAtPrice || 0);
+  const price = parseFloat(variant.price.amount || 0);
+  const compareAtPrice = parseFloat(variant.compareAtPrice?.amount || 0);
 
   if (!compareAtPrice || compareAtPrice <= price) return 0;
 
@@ -96,7 +84,6 @@ function calculateDiscount(variant) {
 }
 
 async function fetchProducts() {
-  // Basitleştirilmiş GraphQL query
   const query = `{
     products(first: 50) {
       edges {
@@ -107,8 +94,12 @@ async function fetchProducts() {
           variants(first: 1) {
             edges {
               node {
-                price
-                compareAtPrice
+                price {
+                  amount
+                }
+                compareAtPrice {
+                  amount
+                }
               }
             }
           }
@@ -117,8 +108,8 @@ async function fetchProducts() {
     }
   }`;
 
-  console.log('Sending GraphQL request...');
-  const response = await shopifyGraphQL(query);
+  console.log('Sending Storefront API request...');
+  const response = await shopifyStorefrontQuery(query);
   console.log('Response received');
   
   if (response.errors) {
@@ -148,20 +139,16 @@ module.exports = async function handler(req, res) {
   try {
     console.log('=== API Request Started ===');
     
-    // Environment check
     const envCheck = checkEnvironment();
     if (envCheck.error) {
       console.error('Environment check failed:', envCheck);
       return res.status(500).json(envCheck);
     }
     console.log('✓ Environment check passed');
-    console.log('Domain:', process.env.SHOPIFY_DOMAIN);
 
-    // Fetch products
     const products = await fetchProducts();
     console.log(`✓ Fetched ${products.length} products`);
 
-    // Process products
     const productsWithDiscount = products.map(edge => {
       const product = edge.node;
       const variant = product.variants.edges,[object Object],?.node;
@@ -171,12 +158,11 @@ module.exports = async function handler(req, res) {
         title: product.title,
         handle: product.handle,
         discount: calculateDiscount(variant),
-        price: variant?.price || '0',
-        compareAtPrice: variant?.compareAtPrice || '0',
+        price: variant?.price?.amount || '0',
+        compareAtPrice: variant?.compareAtPrice?.amount || '0',
       };
     });
 
-    // Sort by discount
     productsWithDiscount.sort((a, b) => b.discount - a.discount);
 
     const executionTime = Date.now() - startTime;
