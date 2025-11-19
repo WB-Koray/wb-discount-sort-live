@@ -1,6 +1,3 @@
-// ============================================
-// CORS Helper Function
-// ============================================
 function setCorsHeaders(res, origin) {
   const allowedOrigins = [
     'https://welcomebaby.com.tr',
@@ -18,22 +15,13 @@ function setCorsHeaders(res, origin) {
   return res;
 }
 
-// ============================================
-// Environment Variables
-// ============================================
 const API_VERSION = process.env.API_VERSION || "2025-10";
 const SHOP = process.env.SHOP;
 const TOKEN = process.env.ADMIN_TOKEN;
 const SECRET = process.env.WB_SECRET || "";
 
-// ============================================
-// Shopify GraphQL Endpoint
-// ============================================
 const graphUrl = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
 
-// ============================================
-// GraphQL Queries
-// ============================================
 const PRODUCTS_QUERY = `
   query CollectionProducts($id: ID!, $cursor: String) {
     collection(id: $id) {
@@ -90,9 +78,6 @@ const REORDER_MUTATION = `
   }
 `;
 
-// ============================================
-// GraphQL Helper Function
-// ============================================
 async function gql(query, variables) {
   try {
     const response = await fetch(graphUrl, {
@@ -117,9 +102,6 @@ async function gql(query, variables) {
   }
 }
 
-// ============================================
-// Main Handler Function
-// ============================================
 module.exports = async function handler(req, res) {
   const origin = req.headers.origin || "";
   
