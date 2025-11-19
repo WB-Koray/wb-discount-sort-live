@@ -1,216 +1,119 @@
-const API_VERSION = process.env.API_VERSION || "2025-10";
-const SHOP = process.env.SHOP;
-const TOKEN = process.env.ADMIN_TOKEN;
-const SECRET = process.env.WB_SECRET || "";
-const ALLOW_ORIGIN = process.env.ALLOW_ORIGIN 
-  ? process.env.ALLOW_ORIGIN.split(",").map(s => s.trim()).filter(Boolean)
-  : [];
+// api/reorder-by-discount.js
 
-const graphUrl = `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
+const fetch = require('node-fetch');
 
-const PRODUCTS_QUERY = `
-  query CollectionProducts($id: ID!, $cursor: String) {
-    collection(id: $id) {
-      id
-      sortOrder
-      products(first: 250, after: $cursor) {
+// Shopify API helper fonksiyonu
+async function shopifyAPI(endpoint, method = 'GET', body = null) {
+  const url = `https://${process.env.SHOPIFY_DOMAIN}/admin/api/2024-01/graphql.json`;
+  
+  const options = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+    },
+  };
+
+  if (body) {
+    options.body = JSON.stringify(body);
+  }
+
+  const response = await fetch(url, options);
+  return await response.json();
+}
+
+// İndirim oranını hesapla
+function calculateDiscount(product) {
+  const variant = product.variants.edges,[object Object],?.node;
+  if (!variant) return 0;
+
+  const price = parseFloat(variant.price);
+  const compareAtPrice = parseFloat(variant.compareAtPrice);
+
+  if (!compareAtPrice || compareAtPrice <= price) return 0;
+
+  return ((compareAtPrice - price) / compareAtPrice) * 100;
+}
+
+// Ürünleri çek
+async function fetchProducts() {
+  const query = `
+    {
+      products(first: 250) {
         edges {
-          cursor
           node {
             id
-            variants(first: 50) {
-              nodes {
-                price
-                compareAtPrice
+            title
+            handle
+            variants(first: 1) {
+              edges {
+                node {
+                  price
+                  compareAtPrice
+                }
               }
             }
           }
         }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
       }
     }
-  }
-`;
+  `;
 
-const SET_MANUAL_MUTATION = `
-  mutation SetManual($input: CollectionInput!) {
-    collectionUpdate(input: $input) {
-      collection {
-        id
-        sortOrder
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-const REORDER_MUTATION = `
-  mutation Reorder($id: ID!, $moves: [MoveInput!]!) {
-    collectionReorderProducts(id: $id, moves: $moves) {
-      job {
-        id
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-async function gql(query, variables) {
-  const r = await fetch(graphUrl, {
-    method: "POST",
-    headers: {
-      "X-Shopify-Access-Token": TOKEN,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  });
-  const j = await r.json();
-  if (j.errors) {
-    throw new Error(`GraphQL: ${JSON.stringify(j.errors)}`);
-  }
-  return j.data;
+  const response = await shopifyAPI('graphql.json', 'POST', { query });
+  return response.data.products.edges;
 }
 
-function corsHeaders(origin) {
-  return {
-    "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, X-WB-Secret",
-    "Access-Control-Max-Age": "600",
-    "Vary": "Origin"
-  };
-}
-
+// Ana handler fonksiyonu
 export default async function handler(req, res) {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   try {
-    const origin = req.headers.origin || "";
-    const allow = ALLOW_ORIGIN.length === 0 || ALLOW_ORIGIN.includes(origin);
-
-    if (req.method === "OPTIONS") {
-      res.writeHead(204, corsHeaders(allow ? origin : "*")).end();
-      return;
-    }
-
-    if (!SHOP || !TOKEN) {
-      res
-        .writeHead(500, corsHeaders(allow ? origin : "*"))
-        .end(JSON.stringify({ error: "Missing SHOP / ADMIN_TOKEN" }));
-      return;
-    }
-
-    if (!allow) {
-      res
-        .writeHead(403, corsHeaders(""))
-        .end(JSON.stringify({ error: "forbidden origin" }));
-      return;
-    }
-
-    if (SECRET && req.headers["x-wb-secret"] !== SECRET) {
-      res
-        .writeHead(401, corsHeaders(origin))
-        .end(JSON.stringify({ error: "unauthorized" }));
-      return;
-    }
-
-    const body = typeof req.body === "object" && req.body
-      ? req.body
-      : JSON.parse(
-          await new Promise((ok) => {
-            let data = "";
-            req.on("data", (c) => (data += c));
-            req.on("end", () => ok(data || "{}"));
-          })
-        );
-
-    const collectionId = body.collectionId;
-    if (!collectionId) {
-      res
-        .writeHead(400, corsHeaders(origin))
-        .end(JSON.stringify({ error: "collectionId required" }));
-      return;
-    }
-
-    const first = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
-    
-    if (first?.collection?.sortOrder !== "MANUAL") {
-      const upd = await gql(SET_MANUAL_MUTATION, {
-        input: { id: collectionId, sortOrder: "MANUAL" }
+    // Environment variables kontrolü
+    if (!process.env.SHOPIFY_DOMAIN || !process.env.SHOPIFY_ACCESS_TOKEN) {
+      return res.status(500).json({ 
+        error: 'Shopify credentials not configured',
+        message: 'SHOPIFY_DOMAIN ve SHOPIFY_ACCESS_TOKEN environment variables gerekli'
       });
-      const errs = upd?.collectionUpdate?.userErrors || [];
-      if (errs.length) {
-        res
-          .writeHead(500, corsHeaders(origin))
-          .end(JSON.stringify({ ok: false, errors: errs }));
-        return;
-      }
     }
 
-    let edges = first?.collection?.products?.edges || [];
-    let pageInfo = first?.collection?.products?.pageInfo;
-    const items = [];
+    console.log('Fetching products...');
+    const products = await fetchProducts();
 
-    const pushEdges = (arr) => {
-      for (const e of arr) {
-        let maxPct = 0;
-        for (const v of e.node?.variants?.nodes || []) {
-          const p = Number(v?.price || 0);
-          const c = Number(v?.compareAtPrice || 0);
-          const pct = c > p ? ((c - p) / c) * 100 : 0;
-          if (pct > maxPct) maxPct = pct;
-        }
-        items.push({ id: e.node.id, discountPercent: maxPct });
-      }
-    };
+    // İndirim oranlarını hesapla ve sırala
+    const productsWithDiscount = products.map(({ node }) => ({
+      id: node.id,
+      title: node.title,
+      handle: node.handle,
+      discount: calculateDiscount(node),
+      price: node.variants.edges,[object Object],?.node.price,
+      compareAtPrice: node.variants.edges,[object Object],?.node.compareAtPrice,
+    }));
 
-    pushEdges(edges);
+    // İndirim oranına göre azalan sırada sırala
+    productsWithDiscount.sort((a, b) => b.discount - a.discount);
 
-    while (pageInfo?.hasNextPage) {
-      const n = await gql(PRODUCTS_QUERY, {
-        id: collectionId,
-        cursor: pageInfo.endCursor
-      });
-      pushEdges(n?.collection?.products?.edges || []);
-      pageInfo = n?.collection?.products?.pageInfo;
-    }
+    console.log(`Sorted ${productsWithDiscount.length} products`);
 
-    if (!items.length) {
-      res
-        .writeHead(200, corsHeaders(origin))
-        .end(JSON.stringify({ ok: true, moved: 0 }));
-      return;
-    }
+    // Sonuçları döndür
+    return res.status(200).json({
+      success: true,
+      count: productsWithDiscount.length,
+      products: productsWithDiscount.slice(0, 50), // İlk 50 ürünü göster
+      timestamp: new Date().toISOString(),
+    });
 
-    const moves = items
-      .sort((a, b) => b.discountPercent - a.discountPercent)
-      .map((p, idx) => ({ id: p.id, newPosition: String(idx + 1) }));
-
-    const result = await gql(REORDER_MUTATION, { id: collectionId, moves });
-    const rErrors = result?.collectionReorderProducts?.userErrors || [];
-    const jobId = result?.collectionReorderProducts?.job?.id || null;
-
-    res
-      .writeHead(200, corsHeaders(origin))
-      .end(
-        JSON.stringify({
-          ok: rErrors.length === 0,
-          moved: moves.length,
-          errors: rErrors,
-          job: jobId
-        })
-      );
-
-  } catch (e) {
-    res
-      .writeHead(500, { "Content-Type": "application/json" })
-      .end(JSON.stringify({ error: e?.message || String(e) }));
+  } catch (error) {
+    console.error('Error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+    });
   }
 }
