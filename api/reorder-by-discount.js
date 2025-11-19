@@ -7,7 +7,7 @@ function setCorsHeaders(res, origin) {
   const isAllowed = allowedOrigins.includes(origin);
   
   res.setHeader('Access-Control-Allow-Credentials', 'true');
-  res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : allowedOrigins,[object Object],);
+  res.setHeader('Access-Control-Allow-Origin', isAllowed ? origin : allowedOrigins,[object],);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With, Content-Type, X-WB-Secret');
   res.setHeader('Access-Control-Max-Age', '86400');
