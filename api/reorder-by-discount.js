@@ -1,87 +1,32 @@
-const https = require('https');
-
-const REQUEST_TIMEOUT = 30000;
+const fetch = require('node-fetch');
 
 function checkEnvironment() {
-  const domain = process.env.SHOPIFY_DOMAIN;
-  const token = process.env.SHOPIFY_ACCESS_TOKEN;
-
-  if (!domain || !token) {
-    return {
-      error: true,
-      message: 'Missing environment variables',
-      details: {
-        SHOPIFY_DOMAIN: domain ? '✓ Set' : '✗ Missing',
-        SHOPIFY_ACCESS_TOKEN: token ? '✓ Set' : '✗ Missing'
-      }
-    };
+  const required = ['SHOPIFY_STORE_URL', 'SHOPIFY_ACCESS_TOKEN'];
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    return { error: true, missing };
   }
-
   return { error: false };
 }
 
-function shopifyGraphQL(query) {
-  return new Promise((resolve, reject) => {
-    const data = JSON.stringify({ query });
-
-    const options = {
-      hostname: process.env.SHOPIFY_DOMAIN,
-      path: '/admin/api/2024-10/graphql.json',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(data),
-        'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
-      },
-      timeout: REQUEST_TIMEOUT
-    };
-
-    const req = https.request(options, (res) => {
-      let body = '';
-
-      res.on('data', (chunk) => {
-        body += chunk;
-      });
-
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(body);
-
-          if (res.statusCode !== 200) {
-            reject(new Error(`Shopify API returned ${res.statusCode}: ${body}`));
-            return;
-          }
-
-          resolve(json);
-        } catch (error) {
-          reject(new Error(`Failed to parse JSON: ${error.message}`));
-        }
-      });
-    });
-
-    req.on('error', (error) => {
-      reject(new Error(`Request failed: ${error.message}`));
-    });
-
-    req.on('timeout', () => {
-      req.destroy();
-      reject(new Error(`Request timeout after ${REQUEST_TIMEOUT}ms`));
-    });
-
-    req.write(data);
-    req.end();
+async function shopifyGraphQL(query) {
+  const url = `https://${process.env.SHOPIFY_STORE_URL}/admin/api/2024-01/graphql.json`;
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
+    },
+    body: JSON.stringify({ query }),
   });
-}
 
-function calculateDiscount(variant) {
-  if (!variant) return 0;
+  if (!response.ok) {
+    throw new Error(`Shopify API error: ${response.status} ${response.statusText}`);
+  }
 
-  const price = parseFloat(variant.price || 0);
-  const compareAtPrice = parseFloat(variant.compareAtPrice || 0);
-
-  if (!compareAtPrice || compareAtPrice <= price) return 0;
-
-  return ((compareAtPrice - price) / compareAtPrice) * 100;
+  return await response.json();
 }
 
 async function fetchProducts() {
@@ -122,7 +67,22 @@ async function fetchProducts() {
   return response.data.products.edges;
 }
 
-module.exports = async function handler(req, res) {
+function calculateDiscount(variant) {
+  if (!variant || !variant.compareAtPrice || !variant.price) {
+    return 0;
+  }
+
+  const price = parseFloat(variant.price);
+  const compareAtPrice = parseFloat(variant.compareAtPrice);
+
+  if (compareAtPrice <= price) {
+    return 0;
+  }
+
+  return ((compareAtPrice - price) / compareAtPrice) * 100;
+}
+
+module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -135,7 +95,7 @@ module.exports = async function handler(req, res) {
 
   try {
     console.log('=== API Request Started ===');
-
+    
     const envCheck = checkEnvironment();
     if (envCheck.error) {
       console.error('Environment check failed:', envCheck);
@@ -144,53 +104,42 @@ module.exports = async function handler(req, res) {
     console.log('✓ Environment check passed');
 
     const products = await fetchProducts();
-console.log(`✓ Fetched ${products.length} products`);
+    console.log(`✓ Fetched ${products.length} products`);
 
-const productsWithDiscount = products.map(edge => {
-  try {
-    const product = edge.node;
-    const variant = product.variants.edges,[object Object],?.node;
-    
-    return {
-      id: product.id,
-      title: product.title,
-      handle: product.handle,
-      discount: calculateDiscount(variant),
-      price: variant?.price || '0',
-      compareAtPrice: variant?.compareAtPrice || '0',
-    };
-  } catch (error) {
-    console.error('Error processing product:', error);
-    console.error('Product data:', edge);
-    return null;
-  }
-}).filter(p => p !== null);
+    const productsWithDiscount = products.map(edge => {
+      const product = edge.node;
+      const variant = product.variants.edges,[object Object],?.node;
+      
+      return {
+        id: product.id,
+        title: product.title,
+        handle: product.handle,
+        discount: calculateDiscount(variant),
+        price: variant?.price || '0',
+        compareAtPrice: variant?.compareAtPrice || '0',
+      };
+    });
 
-productsWithDiscount.sort((a, b) => b.discount - a.discount);
+    productsWithDiscount.sort((a, b) => b.discount - a.discount);
 
-const executionTime = Date.now() - startTime;
-console.log(`✓ Completed in ${executionTime}ms`);
-
-return res.status(200).json({
-  success: true,
-  count: productsWithDiscount.length,
-  topDiscounts: productsWithDiscount.filter(p => p.discount > 0).slice(0, 10),
-  allProducts: productsWithDiscount,
-  executionTime: `${executionTime}ms`,
-  timestamp: new Date().toISOString(),
-});
-
-  } catch (error) {
     const executionTime = Date.now() - startTime;
-    console.error('=== API Error ===');
-    console.error('Message:', error.message);
-    console.error('Stack:', error.stack);
+    console.log(`✓ Completed in ${executionTime}ms`);
 
+    return res.status(200).json({
+      success: true,
+      count: productsWithDiscount.length,
+      topDiscounts: productsWithDiscount.filter(p => p.discount > 0).slice(0, 10),
+      allProducts: productsWithDiscount,
+      executionTime: `${executionTime}ms`,
+      timestamp: new Date().toISOString(),
+    });
+
+  } catch (error) {
+    console.error('Error:', error);
     return res.status(500).json({
       success: false,
       error: error.message,
-      executionTime: `${executionTime}ms`,
-      timestamp: new Date().toISOString(),
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
 };
