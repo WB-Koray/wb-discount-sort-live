@@ -4,53 +4,54 @@ const REQUEST_TIMEOUT = 30000;
 
 function checkEnvironment() {
   const domain = process.env.SHOPIFY_DOMAIN;
-  const token = process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN;
-  
+  const token = process.env.SHOPIFY_ACCESS_TOKEN;
+
   if (!domain || !token) {
     return {
       error: true,
       message: 'Missing environment variables',
       details: {
         SHOPIFY_DOMAIN: domain ? '✓ Set' : '✗ Missing',
-        SHOPIFY_STOREFRONT_ACCESS_TOKEN: token ? '✓ Set' : '✗ Missing'
+        SHOPIFY_ACCESS_TOKEN: token ? '✓ Set' : '✗ Missing'
       }
     };
   }
-  
+
   return { error: false };
 }
 
-function shopifyStorefrontQuery(query) {
+function shopifyGraphQL(query) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify({ query });
-    
+
     const options = {
       hostname: process.env.SHOPIFY_DOMAIN,
-      path: '/api/2024-10/graphql.json',
+      path: '/admin/api/2024-10/graphql.json',
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Shopify-Storefront-Access-Token': process.env.SHOPIFY_STOREFRONT_ACCESS_TOKEN,
+        'Content-Length': Buffer.byteLength(data),
+        'X-Shopify-Access-Token': process.env.SHOPIFY_ACCESS_TOKEN,
       },
       timeout: REQUEST_TIMEOUT
     };
 
     const req = https.request(options, (res) => {
       let body = '';
-      
+
       res.on('data', (chunk) => {
         body += chunk;
       });
-      
+
       res.on('end', () => {
         try {
           const json = JSON.parse(body);
-          
+
           if (res.statusCode !== 200) {
             reject(new Error(`Shopify API returned ${res.statusCode}: ${body}`));
             return;
           }
-          
+
           resolve(json);
         } catch (error) {
           reject(new Error(`Failed to parse JSON: ${error.message}`));
@@ -75,8 +76,8 @@ function shopifyStorefrontQuery(query) {
 function calculateDiscount(variant) {
   if (!variant) return 0;
 
-  const price = parseFloat(variant.price.amount || 0);
-  const compareAtPrice = parseFloat(variant.compareAtPrice?.amount || 0);
+  const price = parseFloat(variant.price || 0);
+  const compareAtPrice = parseFloat(variant.compareAtPrice || 0);
 
   if (!compareAtPrice || compareAtPrice <= price) return 0;
 
@@ -94,12 +95,8 @@ async function fetchProducts() {
           variants(first: 1) {
             edges {
               node {
-                price {
-                  amount
-                }
-                compareAtPrice {
-                  amount
-                }
+                price
+                compareAtPrice
               }
             }
           }
@@ -108,20 +105,20 @@ async function fetchProducts() {
     }
   }`;
 
-  console.log('Sending Storefront API request...');
-  const response = await shopifyStorefrontQuery(query);
+  console.log('Sending GraphQL request...');
+  const response = await shopifyGraphQL(query);
   console.log('Response received');
-  
+
   if (response.errors) {
     console.error('GraphQL errors:', JSON.stringify(response.errors));
     throw new Error(`GraphQL Error: ${JSON.stringify(response.errors)}`);
   }
-  
+
   if (!response.data || !response.data.products) {
     console.error('Invalid response:', JSON.stringify(response));
     throw new Error('Invalid response structure from Shopify');
   }
-  
+
   return response.data.products.edges;
 }
 
@@ -129,7 +126,7 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
+
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -138,7 +135,7 @@ module.exports = async function handler(req, res) {
 
   try {
     console.log('=== API Request Started ===');
-    
+
     const envCheck = checkEnvironment();
     if (envCheck.error) {
       console.error('Environment check failed:', envCheck);
@@ -151,15 +148,15 @@ module.exports = async function handler(req, res) {
 
     const productsWithDiscount = products.map(edge => {
       const product = edge.node;
-      const variant = product.variants.edges,[object Object],?.node;
+      const variant = product.variants.edges,[object Object],?.node; // Düzeltildi
       
       return {
         id: product.id,
         title: product.title,
         handle: product.handle,
         discount: calculateDiscount(variant),
-        price: variant?.price?.amount || '0',
-        compareAtPrice: variant?.compareAtPrice?.amount || '0',
+        price: variant?.price || '0',
+        compareAtPrice: variant?.compareAtPrice || '0',
       };
     });
 
@@ -182,7 +179,7 @@ module.exports = async function handler(req, res) {
     console.error('=== API Error ===');
     console.error('Message:', error.message);
     console.error('Stack:', error.stack);
-    
+
     return res.status(500).json({
       success: false,
       error: error.message,
