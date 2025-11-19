@@ -144,35 +144,41 @@ module.exports = async function handler(req, res) {
     console.log('✓ Environment check passed');
 
     const products = await fetchProducts();
-    console.log(`✓ Fetched ${products.length} products`);
+console.log(`✓ Fetched ${products.length} products`);
 
-    const productsWithDiscount = products.map(edge => {
-      const product = edge.node;
-      const variant = product.variants.edges,[object Object],?.node; // Doğru yazım
-      
-      return {
-        id: product.id,
-        title: product.title,
-        handle: product.handle,
-        discount: calculateDiscount(variant),
-        price: variant?.price || '0',
-        compareAtPrice: variant?.compareAtPrice || '0',
-      };
-    });
+const productsWithDiscount = products.map(edge => {
+  try {
+    const product = edge.node;
+    const variant = product.variants.edges,[object Object],?.node;
+    
+    return {
+      id: product.id,
+      title: product.title,
+      handle: product.handle,
+      discount: calculateDiscount(variant),
+      price: variant?.price || '0',
+      compareAtPrice: variant?.compareAtPrice || '0',
+    };
+  } catch (error) {
+    console.error('Error processing product:', error);
+    console.error('Product data:', edge);
+    return null;
+  }
+}).filter(p => p !== null);
 
-    productsWithDiscount.sort((a, b) => b.discount - a.discount);
+productsWithDiscount.sort((a, b) => b.discount - a.discount);
 
-    const executionTime = Date.now() - startTime;
-    console.log(`✓ Completed in ${executionTime}ms`);
+const executionTime = Date.now() - startTime;
+console.log(`✓ Completed in ${executionTime}ms`);
 
-    return res.status(200).json({
-      success: true,
-      count: productsWithDiscount.length,
-      topDiscounts: productsWithDiscount.filter(p => p.discount > 0).slice(0, 10),
-      allProducts: productsWithDiscount,
-      executionTime: `${executionTime}ms`,
-      timestamp: new Date().toISOString(),
-    });
+return res.status(200).json({
+  success: true,
+  count: productsWithDiscount.length,
+  topDiscounts: productsWithDiscount.filter(p => p.discount > 0).slice(0, 10),
+  allProducts: productsWithDiscount,
+  executionTime: `${executionTime}ms`,
+  timestamp: new Date().toISOString(),
+});
 
   } catch (error) {
     const executionTime = Date.now() - startTime;
