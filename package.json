@@ -3,11 +3,18 @@
   "version": "1.0.0",
   "description": "Shopify product sorting by discount rate",
   "main": "api/reorder-by-discount.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'No build step required'",
+    "start": "vercel dev"
+  },
   "dependencies": {
-    "@shopify/shopify-api": "^7.5.0",
-    "node-fetch": "^2.6.7"
+    "node-fetch": "^2.7.0"
   },
   "engines": {
-    "node": "18.x"
-  }
+    "node": "22.x"
+  },
+  "keywords": ["shopify", "discount", "api", "vercel"],
+  "author": "WB-Koray",
+  "license": "MIT"
 }
