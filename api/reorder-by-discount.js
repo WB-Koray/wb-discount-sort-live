@@ -123,21 +123,17 @@ async function gql(query, variables) {
 export default async function handler(req, res) {
   const origin = req.headers.origin || "";
   
-  // Set CORS headers
   setCorsHeaders(res, origin);
 
-  // Handle OPTIONS preflight request
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
 
-  // Only allow POST requests
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
   try {
-    // Validate environment variables
     if (!SHOP || !TOKEN) {
       console.error("Missing environment variables:", { SHOP: !!SHOP, TOKEN: !!TOKEN });
       return res.status(500).json({ 
@@ -146,12 +142,10 @@ export default async function handler(req, res) {
       });
     }
 
-    // Validate secret if configured
     if (SECRET && req.headers["x-wb-secret"] !== SECRET) {
       return res.status(401).json({ error: "Unauthorized" });
     }
 
-    // Parse request body
     let body = req.body;
     if (typeof body === "string") {
       try {
@@ -168,10 +162,8 @@ export default async function handler(req, res) {
 
     console.log("Processing collection:", collectionId);
 
-    // Fetch collection data
     const firstPage = await gql(PRODUCTS_QUERY, { id: collectionId, cursor: null });
     
-    // Set collection to MANUAL sort order if needed
     if (firstPage?.collection?.sortOrder !== "MANUAL") {
       console.log("Setting collection to MANUAL sort order");
       const updateResult = await gql(SET_MANUAL_MUTATION, {
@@ -185,7 +177,6 @@ export default async function handler(req, res) {
       }
     }
 
-    // Collect all products with pagination
     let edges = firstPage?.collection?.products?.edges || [];
     let pageInfo = firstPage?.collection?.products?.pageInfo;
     const items = [];
@@ -215,7 +206,6 @@ export default async function handler(req, res) {
 
     processEdges(edges);
 
-    // Fetch remaining pages
     while (pageInfo?.hasNextPage) {
       console.log("Fetching next page...");
       const nextPage = await gql(PRODUCTS_QUERY, {
@@ -238,10 +228,8 @@ export default async function handler(req, res) {
       });
     }
 
-    // Sort by discount percentage (highest first)
     const sortedItems = items.sort((a, b) => b.discountPercent - a.discountPercent);
     
-    // Create move operations
     const moves = sortedItems.map((product, index) => ({
       id: product.id,
       newPosition: String(index + 1)
@@ -249,7 +237,6 @@ export default async function handler(req, res) {
 
     console.log(`Reordering ${moves.length} products...`);
 
-    // Execute reorder mutation
     const reorderResult = await gql(REORDER_MUTATION, { 
       id: collectionId, 
       moves 
