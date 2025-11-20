@@ -23,6 +23,8 @@ module.exports = async (req, res) => {
     }
 
     try {
+        // ADIM 1: Ürünleri ve Koleksiyon ID'sini Çek
+        // Koleksiyon ID'sini (id) ekledik, çünkü sıralama güncellemek için lazım.
         const productFragment = `
             edges {
                 node {
@@ -30,14 +32,10 @@ module.exports = async (req, res) => {
                     title
                     handle
                     priceRange {
-                        minVariantPrice {
-                            amount
-                        }
+                        minVariantPrice { amount }
                     }
                     compareAtPriceRange {
-                        minVariantCompareAtPrice {
-                            amount
-                        }
+                        minVariantCompareAtPrice { amount }
                     }
                     variants(first: 1) {
                         edges {
@@ -53,8 +51,14 @@ module.exports = async (req, res) => {
 
         let graphqlQuery = '';
         if (handle) {
-            graphqlQuery = `{ collectionByHandle(handle: "${handle}") { products(first: 50) { ${productFragment} } } }`;
+            graphqlQuery = `{ 
+                collectionByHandle(handle: "${handle}") { 
+                    id 
+                    products(first: 50) { ${productFragment} } 
+                } 
+            }`;
         } else {
+            // Handle yoksa sadece ürünleri listeler, sıralama yapamaz (Koleksiyon ID yok)
             graphqlQuery = `{ products(first: 50) { ${productFragment} } }`;
         }
 
@@ -70,42 +74,35 @@ module.exports = async (req, res) => {
         const json = await response.json();
 
         if (json.errors) {
-            console.error("API Hatası:", JSON.stringify(json.errors, null, 2));
             return res.status(500).json({ error: true, message: json.errors });
         }
 
         let rawProducts = [];
+        let collectionId = null;
+
         if (handle) {
             if (!json.data.collectionByHandle) {
                 return res.status(404).json({ error: true, message: "Koleksiyon bulunamadı" });
             }
             rawProducts = json.data.collectionByHandle.products.edges;
+            collectionId = json.data.collectionByHandle.id;
         } else {
             rawProducts = json.data.products.edges;
         }
 
+        // ADIM 2: İndirimleri Hesapla ve Sırala (RAM'de)
         const products = rawProducts.map(({ node }) => {
-            // 1. Verileri Al
             let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
             let compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
 
-            // Yedek (Varyanttan)
             if (price === 0) {
-                const variant = node.variants.edges?.node;
+                const variant = node.variants.edges,[object Object],?.node;
                 price = parseFloat(variant?.price || 0);
                 if (compareAtPrice === 0) {
                     compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
                 }
             }
 
-            // 2. AKILLI DÜZELTME (AUTO-CORRECTION)
-            // Eğer fiyat, karşılaştırma fiyatından aşırı büyükse (örn: 10 kat), 
-            // muhtemelen kuruş cinsinden gelmiştir. 100'e böl.
-            if (compareAtPrice > 0 && price > compareAtPrice * 2) {
-                price = price / 100;
-            }
-
-            // 3. İndirim Hesapla
             let discountPercentage = 0;
             if (compareAtPrice > price) {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
@@ -114,25 +111,68 @@ module.exports = async (req, res) => {
             return {
                 id: node.id,
                 title: node.title,
-                handle: node.handle,
                 price: price,
                 compareAtPrice: compareAtPrice,
                 discount: discountPercentage
             };
         });
 
-        // 4. İndirim Oranına Göre Sırala (Büyükten Küçüğe)
+        // En yüksek indirimden en düşüğe sırala
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
+
+        // ADIM 3: Shopify'a Yeni Sıralamayı Gönder (Sadece Handle varsa)
+        let reorderResult = null;
         
-        // Sadece indirimi olanları filtrele (İsteğe bağlı, şu an hepsini döndürüyoruz ama sıralı)
-        const topDiscounts = sortedProducts.filter(p => p.discount > 0);
+        if (collectionId && sortedProducts.length > 0) {
+            // Shopify'ın istediği format: { id: "ProductGID", newPosition: "0" }
+            const moves = sortedProducts.map((product, index) => ({
+                id: product.id,
+                newPosition: index.toString()
+            }));
+
+            // Mutation Sorgusu
+            const reorderMutation = `
+                mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
+                    collectionReorderProducts(id: $id, moves: $moves) {
+                        job {
+                            id
+                            done
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            const reorderResponse = await fetch(`https://${SHOPIFY_STORE_URL}/admin/api/2023-10/graphql.json`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+                },
+                body: JSON.stringify({
+                    query: reorderMutation,
+                    variables: {
+                        id: collectionId,
+                        moves: moves
+                    }
+                }),
+            });
+
+            const reorderJson = await reorderResponse.json();
+            reorderResult = reorderJson;
+        }
 
         res.status(200).json({
             success: true,
             collection: handle || "All Products",
             count: sortedProducts.length,
-            topDiscounts: topDiscounts, // En çok indirimli olanlar
-            allProducts: sortedProducts // Hepsi (sıralanmış)
+            reorderStatus: reorderResult ? "Sent to Shopify" : "Skipped (No Collection ID)",
+            shopifyResponse: reorderResult, // Hata varsa burada görebiliriz
+            topDiscounts: sortedProducts.filter(p => p.discount > 0),
+            allProducts: sortedProducts
         });
 
     } catch (error) {
