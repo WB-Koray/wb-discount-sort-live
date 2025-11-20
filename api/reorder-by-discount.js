@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 
 module.exports = async (req, res) => {
-    // ... (Header kısımları aynı) ...
+    // --- Header Ayarları ---
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -18,8 +18,10 @@ module.exports = async (req, res) => {
     }
 
     try {
-        console.log("--- İŞLEM BAŞLIYOR ---");
-        
+        console.log("--- YENİ STRATEJİ İLE İŞLEM BAŞLIYOR ---");
+
+        // STRATEJİ DEĞİŞİKLİĞİ:
+        // Varyant yerine direkt ürünün fiyat aralığını çekiyoruz. Bu çok daha güvenlidir.
         const productFragment = `
         products(first: 250) {
             edges {
@@ -27,12 +29,14 @@ module.exports = async (req, res) => {
                     id
                     title
                     handle
-                    variants(first: 1) {
-                        edges {
-                            node {
-                                price
-                                compareAtPrice
-                            }
+                    priceRange {
+                        minVariantPrice {
+                            amount
+                        }
+                    }
+                    compareAtPriceRange {
+                        minVariantCompareAtPrice {
+                            amount
                         }
                     }
                 }
@@ -66,52 +70,63 @@ module.exports = async (req, res) => {
         if (!collectionData) return res.status(404).json({ error: true, message: "Koleksiyon bulunamadı" });
 
         collectionId = collectionData.id;
-        console.log(`Koleksiyon Bulundu: ${collectionId}, Mevcut Sıralama: ${collectionData.sortOrder}`);
+        const rawProducts = collectionData.products.edges;
+        
+        console.log(`Toplam Ürün: ${rawProducts.length}`);
 
-        // 2. Manuel Sıralamaya Zorla
-        if (collectionData.sortOrder !== 'MANUAL') {
-            console.log("Koleksiyon MANUAL değil, güncelleniyor...");
-            // ... (Update mutation kodu buraya - kısalttım) ...
-            // Burası çalışıyor varsayıyoruz, log kalabalığı yapmasın.
+        // --- RÖNTGEN MODU: İLK ÜRÜNÜN İÇİNİ GÖRELİM ---
+        if (rawProducts.length > 0) {
+            console.log("--- İLK ÜRÜNÜN HAM VERİSİ (Bunu bana gönderin) ---");
+            console.log(JSON.stringify(rawProducts,node, null, 2));
+            console.log("--------------------------------------------------");
         }
 
-        const rawProducts = collectionData.products.edges;
-        console.log(`Toplam Ürün Sayısı: ${rawProducts.length}`);
-
-        // 3. Hesaplama ve LOGLAMA (EN ÖNEMLİ KISIM)
+        // 2. Hesaplama (PriceRange Kullanarak)
         const products = rawProducts.map(({ node }) => {
-            const variantNode = node.variants?.edges?.node;
+            // Fiyatları string'den float'a çeviriyoruz
+            let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
             
-            let price = parseFloat(variantNode?.price || 0);
-            let compareAtPrice = parseFloat(variantNode?.compareAtPrice || 0);
+            // CompareAtPriceRange bazen null gelebilir, kontrol ediyoruz
+            let compareAtPrice = 0;
+            if (node.compareAtPriceRange && node.compareAtPriceRange.minVariantCompareAtPrice) {
+                compareAtPrice = parseFloat(node.compareAtPriceRange.minVariantCompareAtPrice.amount);
+            }
 
-            if (!compareAtPrice || compareAtPrice === 0) compareAtPrice = price;
+            // Eğer eski fiyat yoksa, şu anki fiyata eşitle (İndirim yok demektir)
+            if (!compareAtPrice || compareAtPrice === 0) {
+                compareAtPrice = price;
+            }
 
             let discountPercentage = 0;
-            if (compareAtPrice > price && compareAtPrice > 0) {
+            if (compareAtPrice > price) {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
-            // --- LOG: İlk 3 ürünün detayını görelim ---
-            // Bu sayede fiyatları doğru çekiyor muyuz anlarız.
-            if (Math.random() < 0.1) { // Rastgele bazı ürünleri logla
-                 console.log(`Ürün: ${node.title} | Fiyat: ${price} | Eski Fiyat: ${compareAtPrice} | İndirim: %${discountPercentage}`);
+            // Log: Rastgele kontrol
+            if (Math.random() < 0.05) { 
+                 console.log(`Ürün: ${node.title.substring(0, 20)}... | Fiyat: ${price} | Eski: ${compareAtPrice} | İndirim: %${discountPercentage}`);
             }
 
-            return { id: node.id, discount: discountPercentage, title: node.title };
+            return { id: node.id, discount: discountPercentage };
         });
 
-        // 4. Sıralama
+        // 3. Sıralama
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
 
-        console.log("--- SIRALAMA SONRASI İLK 3 ÜRÜN ---");
-        console.log(sortedProducts.slice(0, 3));
+        console.log("En Yüksek İndirimli İlk 3 ID:", sortedProducts.slice(0, 3).map(p => p.discount));
 
-        // 5. Gönderme
+        // 4. Gönderme
         const moves = sortedProducts.map((product, index) => ({
             id: product.id,
             newPosition: index.toString()
         }));
+        
+        // Eğer sıralama değişmeyecekse (hepsi 0 ise) boşuna yorma
+        const maxDiscount = sortedProducts,?.discount || 0;
+        if (maxDiscount === 0) {
+            console.log("UYARI: Hiçbir üründe indirim bulunamadı. Sıralama yapılmıyor.");
+            return res.status(200).json({ ok: true, message: "İndirimli ürün yok, sıralama değişmedi." });
+        }
 
         const reorderMutation = `
         mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
@@ -129,13 +144,6 @@ module.exports = async (req, res) => {
         });
 
         const reorderJson = await reorderResponse.json();
-        
-        console.log("Shopify Cevabı:", JSON.stringify(reorderJson, null, 2));
-
-        if (reorderJson.data?.collectionReorderProducts?.userErrors?.length > 0) {
-            console.error("!!! SHOPIFY HATASI !!!", reorderJson.data.collectionReorderProducts.userErrors);
-        }
-
         res.status(200).json({ ok: true, moved: moves.length, shopifyResponse: reorderJson });
 
     } catch (error) {
