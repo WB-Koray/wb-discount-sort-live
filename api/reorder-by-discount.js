@@ -101,7 +101,7 @@ module.exports = async (req, res) => {
     const productsWithDiscount = products.map(edge => {
       const product = edge.node;
       // DİKKAT: Burada sadece ,[object Object], olmalı
-      const variant = product.variants.edges,[object Object],?.node;
+      const variant = product.variants.edges?.node;
       
       return {
         id: product.id,
