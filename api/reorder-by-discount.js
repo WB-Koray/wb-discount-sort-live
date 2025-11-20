@@ -1,7 +1,7 @@
 const fetch = require('node-fetch');
 
 module.exports = async (req, res) => {
-    // 1. CORS ve Pre-flight
+    // 1. CORS ve Pre-flight Ayarları
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -25,22 +25,26 @@ module.exports = async (req, res) => {
 
     try {
         // Ürün verilerini çekeceğimiz parça
+        // Not: Varyantlardan fiyatı ve compareAtPrice'ı net istiyoruz.
         const productFragment = `
-            products(first: 250) {
-                edges {
-                    node {
-                        id
-                        title
-                        priceRange { minVariantPrice { amount } }
-                        compareAtPriceRange { minVariantCompareAtPrice { amount } }
-                        variants(first: 1) {
-                            edges {
-                                node { price compareAtPrice }
+        products(first: 250) {
+            edges {
+                node {
+                    id
+                    title
+                    priceRange { minVariantPrice { amount } }
+                    compareAtPriceRange { minVariantCompareAtPrice { amount } }
+                    variants(first: 1) {
+                        edges {
+                            node {
+                                price
+                                compareAtPrice
                             }
                         }
                     }
                 }
             }
+        }
         `;
 
         let graphqlQuery = '';
@@ -48,27 +52,27 @@ module.exports = async (req, res) => {
         // Senaryo A: Frontend GID gönderdi
         if (collectionId) {
             graphqlQuery = `
-                {
-                    node(id: "${collectionId}") {
-                        ... on Collection {
-                            id
-                            sortOrder
-                            ${productFragment}
-                        }
-                    }
-                }
-            `;
-        }
-        // Senaryo B: Handle gönderildi
-        else if (handle) {
-            graphqlQuery = `
-                {
-                    collectionByHandle(handle: "${handle}") {
+            {
+                node(id: "${collectionId}") {
+                    ... on Collection {
                         id
                         sortOrder
                         ${productFragment}
                     }
                 }
+            }
+            `;
+        }
+        // Senaryo B: Handle gönderildi
+        else if (handle) {
+            graphqlQuery = `
+            {
+                collectionByHandle(handle: "${handle}") {
+                    id
+                    sortOrder
+                    ${productFragment}
+                }
+            }
             `;
         } else {
             return res.status(400).json({ error: true, message: "Collection ID or Handle required" });
@@ -95,24 +99,24 @@ module.exports = async (req, res) => {
         }
 
         collectionId = collectionData.id;
-        const currentSortOrder = collectionData.sortOrder; // Mevcut sıralama ayarını alıyoruz
+        const currentSortOrder = collectionData.sortOrder;
 
-        // --- YENİ EKLENEN KISIM BAŞLANGIÇ ---
+        // --- KOLEKSİYON SIRALAMA TİPİNİ GÜNCELLEME ---
         // Eğer koleksiyon "MANUAL" değilse, önce onu "MANUAL" yapıyoruz.
         if (currentSortOrder !== 'MANUAL') {
             const updateCollectionMutation = `
-                mutation collectionUpdate($input: CollectionInput!) {
-                    collectionUpdate(input: $input) {
-                        collection {
-                            id
-                            sortOrder
-                        }
-                        userErrors {
-                            field
-                            message
-                        }
+            mutation collectionUpdate($input: CollectionInput!) {
+                collectionUpdate(input: $input) {
+                    collection {
+                        id
+                        sortOrder
+                    }
+                    userErrors {
+                        field
+                        message
                     }
                 }
+            }
             `;
 
             const updateResponse = await fetch(`https://${SHOPIFY_STORE_URL}/admin/api/2023-10/graphql.json`, {
@@ -123,45 +127,50 @@ module.exports = async (req, res) => {
                 },
                 body: JSON.stringify({
                     query: updateCollectionMutation,
-                    variables: {
-                        input: {
-                            id: collectionId,
-                            sortOrder: "MANUAL"
-                        }
-                    }
+                    variables: { input: { id: collectionId, sortOrder: "MANUAL" } }
                 }),
             });
 
             const updateJson = await updateResponse.json();
             if (updateJson.data?.collectionUpdate?.userErrors?.length > 0) {
                 console.error("Collection Update Error:", updateJson.data.collectionUpdate.userErrors);
-                // Kritik bir hata değilse devam edebiliriz ama loglamak önemli.
             }
         }
-        // --- YENİ EKLENEN KISIM BİTİŞ ---
 
         const rawProducts = collectionData.products.edges;
 
-        // 3. İndirim Hesaplama Mantığı
+        // 3. İndirim Hesaplama Mantığı (DÜZELTİLEN KISIM)
         const products = rawProducts.map(({ node }) => {
-            let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
-            let compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
+            // İlk varyantı al (En güvenilir fiyat kaynağı burasıdır)
+            const variantNode = node.variants?.edges?.node;
 
-            if (price === 0) {
-                const variant = node.variants.edges?.node;
-                price = parseFloat(variant?.price || 0);
-                if (compareAtPrice === 0) compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
+            // Fiyatları çekiyoruz. Varyant varsa oradan, yoksa genel aralıktan.
+            let price = parseFloat(variantNode?.price || node.priceRange?.minVariantPrice?.amount || 0);
+            
+            // İndirimsiz fiyatı çekiyoruz.
+            let compareAtPrice = parseFloat(variantNode?.compareAtPrice || node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
+
+            // GÜVENLİK KONTROLÜ:
+            // Eğer compareAtPrice null ise veya 0 ise, indirim yok demektir.
+            // Bu durumda compareAtPrice'ı normal fiyata eşitleyelim ki hesaplama bozulmasın.
+            if (!compareAtPrice || compareAtPrice === 0) {
+                compareAtPrice = price;
             }
 
             let discountPercentage = 0;
-            if (compareAtPrice > price) {
+
+            // Sadece eski fiyat, şu anki fiyattan büyükse hesapla
+            if (compareAtPrice > price && compareAtPrice > 0) {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
-            return { id: node.id, discount: discountPercentage };
+            return {
+                id: node.id,
+                discount: discountPercentage
+            };
         });
 
-        // 4. Sıralama (Büyükten küçüğe)
+        // 4. Sıralama (Büyükten küçüğe - En yüksek indirim en üstte)
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
 
         // 5. Shopify'a Geri Yazma (Reorder Mutation)
@@ -170,19 +179,24 @@ module.exports = async (req, res) => {
             newPosition: index.toString()
         }));
 
+        // Eğer sıralanacak ürün yoksa işlemi bitir
+        if (moves.length === 0) {
+             return res.status(200).json({ ok: true, message: "Sıralanacak ürün bulunamadı." });
+        }
+
         const reorderMutation = `
-            mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
-                collectionReorderProducts(id: $id, moves: $moves) {
-                    job {
-                        id
-                        done
-                    }
-                    userErrors {
-                        field
-                        message
-                    }
+        mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
+            collectionReorderProducts(id: $id, moves: $moves) {
+                job {
+                    id
+                    done
+                }
+                userErrors {
+                    field
+                    message
                 }
             }
+        }
         `;
 
         const reorderResponse = await fetch(`https://${SHOPIFY_STORE_URL}/admin/api/2023-10/graphql.json`, {
@@ -193,7 +207,10 @@ module.exports = async (req, res) => {
             },
             body: JSON.stringify({
                 query: reorderMutation,
-                variables: { id: collectionId, moves: moves }
+                variables: {
+                    id: collectionId,
+                    moves: moves
+                }
             }),
         });
 
@@ -204,7 +221,7 @@ module.exports = async (req, res) => {
             ok: true,
             moved: moves.length,
             shopifyResponse: reorderJson,
-            sortOrderUpdated: currentSortOrder !== 'MANUAL' // Bilgi amaçlı flag
+            sortOrderUpdated: currentSortOrder !== 'MANUAL'
         });
 
     } catch (error) {
