@@ -23,7 +23,6 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // Hem Varyant hem de Range verilerini çekiyoruz
         const productFragment = `
             edges {
                 node {
@@ -71,6 +70,7 @@ module.exports = async (req, res) => {
         const json = await response.json();
 
         if (json.errors) {
+            console.error("API Hatası:", JSON.stringify(json.errors, null, 2));
             return res.status(500).json({ error: true, message: json.errors });
         }
 
@@ -85,26 +85,29 @@ module.exports = async (req, res) => {
         }
 
         const products = rawProducts.map(({ node }) => {
-            const variant = node.variants.edges?.node;
-            
-            // 1. ÖNCELİK: Varyant Fiyatı (En güvenilir kaynak)
-            let price = parseFloat(variant?.price || 0);
-            let compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
+            // 1. Verileri Al
+            let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
+            let compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
 
-            // 2. YEDEK: Eğer varyant fiyatı 0 ise Range'e bak (Ama dikkatli ol)
+            // Yedek (Varyanttan)
             if (price === 0) {
-                price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
-                // Eğer range fiyatı aşırı büyükse (örn: 134900), 100'e bölmeyi deneyebiliriz ama şimdilik manuel müdahale etmiyoruz.
-                // Sadece varyantın 0 olduğu durumda burası çalışacak.
-            }
-            
-            if (compareAtPrice === 0) {
-                compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
+                const variant = node.variants.edges?.node;
+                price = parseFloat(variant?.price || 0);
+                if (compareAtPrice === 0) {
+                    compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
+                }
             }
 
-            // İndirim Hesaplama
+            // 2. AKILLI DÜZELTME (AUTO-CORRECTION)
+            // Eğer fiyat, karşılaştırma fiyatından aşırı büyükse (örn: 10 kat), 
+            // muhtemelen kuruş cinsinden gelmiştir. 100'e böl.
+            if (compareAtPrice > 0 && price > compareAtPrice * 2) {
+                price = price / 100;
+            }
+
+            // 3. İndirim Hesapla
             let discountPercentage = 0;
-            if (compareAtPrice > price && price > 0) {
+            if (compareAtPrice > price) {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
@@ -114,27 +117,22 @@ module.exports = async (req, res) => {
                 handle: node.handle,
                 price: price,
                 compareAtPrice: compareAtPrice,
-                discount: discountPercentage,
-                // Debug alanını genişlettik, her şeyi görelim
-                debug: {
-                    variantPrice: variant?.price,
-                    variantCompare: variant?.compareAtPrice,
-                    rangePrice: node.priceRange?.minVariantPrice?.amount,
-                    rangeCompare: node.compareAtPriceRange?.minVariantCompareAtPrice?.amount
-                }
+                discount: discountPercentage
             };
         });
 
-        // İndirim oranına göre büyükten küçüğe sırala
+        // 4. İndirim Oranına Göre Sırala (Büyükten Küçüğe)
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
+        
+        // Sadece indirimi olanları filtrele (İsteğe bağlı, şu an hepsini döndürüyoruz ama sıralı)
         const topDiscounts = sortedProducts.filter(p => p.discount > 0);
 
         res.status(200).json({
             success: true,
             collection: handle || "All Products",
             count: sortedProducts.length,
-            topDiscounts: topDiscounts,
-            allProducts: sortedProducts
+            topDiscounts: topDiscounts, // En çok indirimli olanlar
+            allProducts: sortedProducts // Hepsi (sıralanmış)
         });
 
     } catch (error) {
