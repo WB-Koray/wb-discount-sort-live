@@ -122,7 +122,7 @@ module.exports = async (req, res) => {
         }));
         
         // Eğer sıralama değişmeyecekse (hepsi 0 ise) boşuna yorma
-        const maxDiscount = sortedProducts,?.discount || 0;
+        const maxDiscount = sortedProducts, .discount || 0;
         if (maxDiscount === 0) {
             console.log("UYARI: Hiçbir üründe indirim bulunamadı. Sıralama yapılmıyor.");
             return res.status(200).json({ ok: true, message: "İndirimli ürün yok, sıralama değişmedi." });
