@@ -1,9 +1,7 @@
 {
-  "name": "wb-discount-sort-live",
+  "name": "shopify-discount-api",
   "version": "1.0.0",
-  "description": "Shopify discount sorting API",
-  "engines": {
-    "node": "22.x"
-  },
-  "dependencies": {}
+  "dependencies": {
+    "node-fetch": "^2.6.7"
+  }
 }
