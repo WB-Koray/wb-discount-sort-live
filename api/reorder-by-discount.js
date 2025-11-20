@@ -106,7 +106,7 @@ module.exports = async (req, res) => {
 
         // 3. Veriyi İşle
         const products = rawProducts.map(({ node }) => {
-            const variant = node.variants.edges,[object Object],?.node;
+            const variant = node.variants.edges?.node;
             const price = parseFloat(variant?.price || 0);
             const compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
 
