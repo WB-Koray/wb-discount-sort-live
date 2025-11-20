@@ -23,7 +23,7 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // DÜZELTME BURADA YAPILDI: minVariantCompareAtPrice
+        // Hem Varyant hem de Range verilerini çekiyoruz
         const productFragment = `
             edges {
                 node {
@@ -71,7 +71,6 @@ module.exports = async (req, res) => {
         const json = await response.json();
 
         if (json.errors) {
-            console.error("API Hatası:", JSON.stringify(json.errors, null, 2));
             return res.status(500).json({ error: true, message: json.errors });
         }
 
@@ -86,24 +85,26 @@ module.exports = async (req, res) => {
         }
 
         const products = rawProducts.map(({ node }) => {
-            // 1. Yöntem: Price Range
-            let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
+            const variant = node.variants.edges?.node;
             
-            // DÜZELTME: Veriyi yeni alandan okuyoruz
-            let compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
+            // 1. ÖNCELİK: Varyant Fiyatı (En güvenilir kaynak)
+            let price = parseFloat(variant?.price || 0);
+            let compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
 
-            // 2. Yöntem: Yedek (Varyant)
+            // 2. YEDEK: Eğer varyant fiyatı 0 ise Range'e bak (Ama dikkatli ol)
             if (price === 0) {
-                const variant = node.variants.edges?.node;
-                price = parseFloat(variant?.price || 0);
-                // Eğer range'den gelmediyse varyanttan almayı dene
-                if (compareAtPrice === 0) {
-                    compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
-                }
+                price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
+                // Eğer range fiyatı aşırı büyükse (örn: 134900), 100'e bölmeyi deneyebiliriz ama şimdilik manuel müdahale etmiyoruz.
+                // Sadece varyantın 0 olduğu durumda burası çalışacak.
+            }
+            
+            if (compareAtPrice === 0) {
+                compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
             }
 
+            // İndirim Hesaplama
             let discountPercentage = 0;
-            if (compareAtPrice > price) {
+            if (compareAtPrice > price && price > 0) {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
@@ -114,13 +115,17 @@ module.exports = async (req, res) => {
                 price: price,
                 compareAtPrice: compareAtPrice,
                 discount: discountPercentage,
+                // Debug alanını genişlettik, her şeyi görelim
                 debug: {
+                    variantPrice: variant?.price,
+                    variantCompare: variant?.compareAtPrice,
                     rangePrice: node.priceRange?.minVariantPrice?.amount,
                     rangeCompare: node.compareAtPriceRange?.minVariantCompareAtPrice?.amount
                 }
             };
         });
 
+        // İndirim oranına göre büyükten küçüğe sırala
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
         const topDiscounts = sortedProducts.filter(p => p.discount > 0);
 
