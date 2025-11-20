@@ -92,7 +92,7 @@ module.exports = async (req, res) => {
 
             // 2. Yöntem: Eğer Price Range 0 geldiyse Varyant'a bak (Yedek)
             if (price === 0) {
-                const variant = node.variants.edges,[object Object],?.node;
+                const variant = node.variants.edges?.node;
                 price = parseFloat(variant?.price || 0);
                 compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
             }
