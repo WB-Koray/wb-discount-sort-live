@@ -1,9 +1,7 @@
 const fetch = require('node-fetch');
 
-// "export default" YERİNE "module.exports" KULLANIYORUZ:
 module.exports = async (req, res) => {
-
-    // CORS Ayarları
+    // 1. CORS Ayarları
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
@@ -18,24 +16,24 @@ module.exports = async (req, res) => {
     }
 
     const { SHOPIFY_STORE_URL, SHOPIFY_ACCESS_TOKEN } = process.env;
+    
+    // URL'den koleksiyon adını (handle) alıyoruz. Örn: ?handle=anne-bebek-urunleri
+    const { handle } = req.query;
 
     if (!SHOPIFY_STORE_URL || !SHOPIFY_ACCESS_TOKEN) {
-        return res.status(500).json({ 
-            error: true, 
-            message: 'Environment variables missing' 
-        });
+        return res.status(500).json({ error: true, message: 'Environment variables missing' });
     }
 
     try {
-        const response = await fetch(`https://${SHOPIFY_STORE_URL}/admin/api/2023-10/graphql.json`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-            },
-            body: JSON.stringify({
-                query: `
-                {
+        // 2. GraphQL Sorgusunu Hazırla
+        // Eğer handle varsa o koleksiyonu, yoksa genel ürünleri çeker.
+        let graphqlQuery = '';
+
+        if (handle) {
+            // Belirli bir koleksiyondaki ürünleri çek
+            graphqlQuery = `
+            {
+                collectionByHandle(handle: "${handle}") {
                     products(first: 50) {
                         edges {
                             node {
@@ -53,19 +51,62 @@ module.exports = async (req, res) => {
                             }
                         }
                     }
-                }`
-            }),
+                }
+            }`;
+        } else {
+            // Handle yoksa rastgele 50 ürün çek (Yedek plan)
+            graphqlQuery = `
+            {
+                products(first: 50) {
+                    edges {
+                        node {
+                            id
+                            title
+                            handle
+                            variants(first: 1) {
+                                edges {
+                                    node {
+                                        price
+                                        compareAtPrice
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }`;
+        }
+
+        const response = await fetch(`https://${SHOPIFY_STORE_URL}/admin/api/2023-10/graphql.json`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+            },
+            body: JSON.stringify({ query: graphqlQuery }),
         });
 
         const json = await response.json();
 
+        // Hata kontrolü
         if (json.errors) {
-            console.error("Shopify API Hatası:", json.errors);
             return res.status(500).json({ error: true, message: json.errors });
         }
 
-        const products = json.data.products.edges.map(({ node }) => {
-            const variant = node.variants.edges?.node;
+        // Veri yolunu ayarla (Koleksiyon sorgusu ile normal sorgunun dönüş yolları farklıdır)
+        let rawProducts = [];
+        if (handle) {
+            if (!json.data.collectionByHandle) {
+                return res.status(404).json({ error: true, message: "Koleksiyon bulunamadı" });
+            }
+            rawProducts = json.data.collectionByHandle.products.edges;
+        } else {
+            rawProducts = json.data.products.edges;
+        }
+
+        // 3. Veriyi İşle
+        const products = rawProducts.map(({ node }) => {
+            const variant = node.variants.edges,[object Object],?.node;
             const price = parseFloat(variant?.price || 0);
             const compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
 
@@ -84,18 +125,20 @@ module.exports = async (req, res) => {
             };
         });
 
+        // 4. Sırala
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
         const topDiscounts = sortedProducts.filter(p => p.discount > 0);
 
         res.status(200).json({
             success: true,
+            collection: handle || "All Products",
             count: sortedProducts.length,
             topDiscounts: topDiscounts,
             allProducts: sortedProducts
         });
 
     } catch (error) {
-        console.error("Sunucu Hatası:", error);
+        console.error("Hata:", error);
         res.status(500).json({ error: true, message: error.message });
     }
 };
