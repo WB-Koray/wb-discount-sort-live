@@ -18,10 +18,8 @@ module.exports = async (req, res) => {
     }
 
     try {
-        console.log("--- YENİ STRATEJİ İLE İŞLEM BAŞLIYOR ---");
+        console.log("--- GÜVENLİ MOD BAŞLIYOR ---");
 
-        // STRATEJİ DEĞİŞİKLİĞİ:
-        // Varyant yerine direkt ürünün fiyat aralığını çekiyoruz. Bu çok daha güvenlidir.
         const productFragment = `
         products(first: 250) {
             edges {
@@ -74,25 +72,27 @@ module.exports = async (req, res) => {
         
         console.log(`Toplam Ürün: ${rawProducts.length}`);
 
-        // --- RÖNTGEN MODU: İLK ÜRÜNÜN İÇİNİ GÖRELİM ---
-        if (rawProducts.length > 0) {
-            console.log("--- İLK ÜRÜNÜN HAM VERİSİ (Bunu bana gönderin) ---");
-            console.log(JSON.stringify(rawProducts,node, null, 2));
-            console.log("--------------------------------------------------");
-        }
+        // 2. Hesaplama
+        const products = rawProducts.map(({ node }, index) => {
+            
+            // --- HATA VERMEYEN LOGLAMA YÖNTEMİ ---
+            // İlk ürünün verisini döngü içinde yazdırıyoruz, burada 'node' kesinlikle tanımlıdır.
+            if (index === 0) {
+                console.log("--- İLK ÜRÜN DETAYLI VERİSİ ---");
+                console.log(JSON.stringify(node, null, 2));
+                console.log("-------------------------------");
+            }
 
-        // 2. Hesaplama (PriceRange Kullanarak)
-        const products = rawProducts.map(({ node }) => {
             // Fiyatları string'den float'a çeviriyoruz
             let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
             
-            // CompareAtPriceRange bazen null gelebilir, kontrol ediyoruz
+            // CompareAtPriceRange kontrolü
             let compareAtPrice = 0;
             if (node.compareAtPriceRange && node.compareAtPriceRange.minVariantCompareAtPrice) {
                 compareAtPrice = parseFloat(node.compareAtPriceRange.minVariantCompareAtPrice.amount);
             }
 
-            // Eğer eski fiyat yoksa, şu anki fiyata eşitle (İndirim yok demektir)
+            // Eğer eski fiyat yoksa, şu anki fiyata eşitle
             if (!compareAtPrice || compareAtPrice === 0) {
                 compareAtPrice = price;
             }
@@ -102,18 +102,15 @@ module.exports = async (req, res) => {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
-            // Log: Rastgele kontrol
-            if (Math.random() < 0.05) { 
-                 console.log(`Ürün: ${node.title.substring(0, 20)}... | Fiyat: ${price} | Eski: ${compareAtPrice} | İndirim: %${discountPercentage}`);
-            }
-
             return { id: node.id, discount: discountPercentage };
         });
 
         // 3. Sıralama
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
 
-        console.log("En Yüksek İndirimli İlk 3 ID:", sortedProducts.slice(0, 3).map(p => p.discount));
+        // En yüksek indirim oranlarını görelim
+        const topDiscounts = sortedProducts.slice(0, 5).map(p => p.discount);
+        console.log("En Yüksek 5 İndirim Oranı:", topDiscounts);
 
         // 4. Gönderme
         const moves = sortedProducts.map((product, index) => ({
@@ -121,10 +118,7 @@ module.exports = async (req, res) => {
             newPosition: index.toString()
         }));
         
-        // Eğer sıralama değişmeyecekse (hepsi 0 ise) boşuna yorma
         const maxDiscount = sortedProducts?.discount || 0;
-
-
         if (maxDiscount === 0) {
             console.log("UYARI: Hiçbir üründe indirim bulunamadı. Sıralama yapılmıyor.");
             return res.status(200).json({ ok: true, message: "İndirimli ürün yok, sıralama değişmedi." });
