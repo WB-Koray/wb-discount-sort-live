@@ -23,7 +23,7 @@ module.exports = async (req, res) => {
     }
 
     try {
-        // SORGULAMA KISMI GÜNCELLENDİ: priceRange ve compareAtPriceRange eklendi
+        // DÜZELTME BURADA YAPILDI: minVariantCompareAtPrice
         const productFragment = `
             edges {
                 node {
@@ -36,7 +36,7 @@ module.exports = async (req, res) => {
                         }
                     }
                     compareAtPriceRange {
-                        minVariantPrice {
+                        minVariantCompareAtPrice {
                             amount
                         }
                     }
@@ -71,6 +71,7 @@ module.exports = async (req, res) => {
         const json = await response.json();
 
         if (json.errors) {
+            console.error("API Hatası:", JSON.stringify(json.errors, null, 2));
             return res.status(500).json({ error: true, message: json.errors });
         }
 
@@ -84,17 +85,21 @@ module.exports = async (req, res) => {
             rawProducts = json.data.products.edges;
         }
 
-        // VERİ İŞLEME KISMI GÜNCELLENDİ
         const products = rawProducts.map(({ node }) => {
-            // 1. Yöntem: Price Range (En güvenlisi)
+            // 1. Yöntem: Price Range
             let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
-            let compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantPrice?.amount || 0);
+            
+            // DÜZELTME: Veriyi yeni alandan okuyoruz
+            let compareAtPrice = parseFloat(node.compareAtPriceRange?.minVariantCompareAtPrice?.amount || 0);
 
-            // 2. Yöntem: Eğer Price Range 0 geldiyse Varyant'a bak (Yedek)
+            // 2. Yöntem: Yedek (Varyant)
             if (price === 0) {
                 const variant = node.variants.edges?.node;
                 price = parseFloat(variant?.price || 0);
-                compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
+                // Eğer range'den gelmediyse varyanttan almayı dene
+                if (compareAtPrice === 0) {
+                    compareAtPrice = parseFloat(variant?.compareAtPrice || 0);
+                }
             }
 
             let discountPercentage = 0;
@@ -109,10 +114,9 @@ module.exports = async (req, res) => {
                 price: price,
                 compareAtPrice: compareAtPrice,
                 discount: discountPercentage,
-                // Debug için ham veriyi de görelim (sorun devam ederse buna bakacağız)
                 debug: {
                     rangePrice: node.priceRange?.minVariantPrice?.amount,
-                    variantPrice: node.variants.edges?.node?.price
+                    rangeCompare: node.compareAtPriceRange?.minVariantCompareAtPrice?.amount
                 }
             };
         });
@@ -129,7 +133,7 @@ module.exports = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("Hata:", error);
+        console.error("Sunucu Hatası:", error);
         res.status(500).json({ error: true, message: error.message });
     }
 };
