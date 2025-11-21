@@ -17,7 +17,7 @@ module.exports = async (req, res) => {
     }
 
     try {
-        console.log("--- AKILLI FİYAT DÜZELTİCİ MODU ---");
+        console.log("--- ZORUNLU SIRALAMA MODU ---");
 
         const productFragment = `
         products(first: 250) {
@@ -75,20 +75,11 @@ module.exports = async (req, res) => {
                 compareAtPrice = parseFloat(node.compareAtPriceRange.minVariantCompareAtPrice.amount);
             }
 
-            // --- AKILLI DÜZELTME MANTIĞI ---
-            // Sorun: Price 134900.0 geliyor, CompareAt 1799.9 geliyor.
-            // Çözüm: Eğer Price, CompareAt'ten çok büyükse (örneğin 10 katından fazla), 
-            // ve Price'ı 100'e böldüğümüzde CompareAt'in altına düşüyorsa, bu bir format hatasıdır.
-            
+            // --- AKILLI FİYAT DÜZELTME ---
+            // Fiyat, karşılaştırma fiyatından aşırı büyükse (örn: 134900 vs 1799), 100'e böl.
             if (compareAtPrice > 0 && price > compareAtPrice * 2) {
                 const correctedPrice = price / 100;
-                
-                // Eğer 100'e bölünmüş hali mantıklıysa (Eski fiyattan düşükse veya yakınsa) onu kullan
                 if (correctedPrice < compareAtPrice) {
-                    // Sadece emin olmak için loglayalım (ilk birkaç seferde)
-                    if (Math.random() < 0.05) {
-                        console.log(`DÜZELTME: ${node.title} | Hatalı Fiyat: ${price} -> Düzeltilen: ${correctedPrice} | Eski Fiyat: ${compareAtPrice}`);
-                    }
                     price = correctedPrice;
                 }
             }
@@ -102,24 +93,25 @@ module.exports = async (req, res) => {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
-            return { id: node.id, discount: discountPercentage };
+            return { id: node.id, discount: discountPercentage, title: node.title };
         });
 
+        // --- SIRALAMA MANTIĞI ---
+        // Büyükten küçüğe sırala. İndirimi olmayanlar (0) en sona düşer.
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
 
-        // Kontrol için en yüksek indirimleri yazdıralım
         console.log("En Yüksek 5 İndirim:", sortedProducts.slice(0, 5).map(p => `%${p.discount}`));
+        console.log("En Düşük 5 İndirim:", sortedProducts.slice(-5).map(p => `%${p.discount}`));
 
+        // --- GÜVENLİK KONTROLÜ KALDIRILDI ---
+        // Artık "indirim yoksa dur" demiyoruz. Sıralamayı her türlü gönderiyoruz.
+        
         const moves = sortedProducts.map((product, index) => ({
             id: product.id,
             newPosition: index.toString()
         }));
-        
-        const maxDiscount = sortedProducts?.discount || 0;
-        if (maxDiscount === 0) {
-            console.log("UYARI: İndirim bulunamadı (Düzeltmeye rağmen).");
-            return res.status(200).json({ ok: true, message: "İndirimli ürün yok." });
-        }
+
+        console.log(`Shopify'a ${moves.length} adet ürün için yeni sıralama gönderiliyor...`);
 
         const reorderMutation = `
         mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
@@ -137,6 +129,14 @@ module.exports = async (req, res) => {
         });
 
         const reorderJson = await reorderResponse.json();
+        
+        // Hata kontrolü
+        if (reorderJson.data?.collectionReorderProducts?.userErrors?.length > 0) {
+            console.error("Shopify Sıralama Hatası:", reorderJson.data.collectionReorderProducts.userErrors);
+        } else {
+            console.log("Sıralama Başarıyla Gönderildi!");
+        }
+
         res.status(200).json({ ok: true, moved: moves.length, shopifyResponse: reorderJson });
 
     } catch (error) {
