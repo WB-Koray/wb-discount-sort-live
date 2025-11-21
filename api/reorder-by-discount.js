@@ -17,7 +17,7 @@ module.exports = async (req, res) => {
     }
 
     try {
-        console.log("--- ZORUNLU SIRALAMA MODU ---");
+        console.log("--- AKILLI SIRALAMA (OTOMATİK MANUEL MOD) ---");
 
         const productFragment = `
         products(first: 250) {
@@ -26,16 +26,8 @@ module.exports = async (req, res) => {
                     id
                     title
                     handle
-                    priceRange {
-                        minVariantPrice {
-                            amount
-                        }
-                    }
-                    compareAtPriceRange {
-                        minVariantCompareAtPrice {
-                            amount
-                        }
-                    }
+                    priceRange { minVariantPrice { amount } }
+                    compareAtPriceRange { minVariantCompareAtPrice { amount } }
                 }
             }
         }
@@ -63,55 +55,69 @@ module.exports = async (req, res) => {
         if (!collectionData) return res.status(404).json({ error: true, message: "Koleksiyon bulunamadı" });
 
         collectionId = collectionData.id;
+        const currentSortOrder = collectionData.sortOrder; // Mevcut sıralama ayarını al
         const rawProducts = collectionData.products.edges;
         
-        console.log(`Toplam Ürün: ${rawProducts.length}`);
+        console.log(`Koleksiyon: ${collectionId} | Mevcut Mod: ${currentSortOrder} | Ürün: ${rawProducts.length}`);
 
+        // --- ADIM 1: EĞER KOLEKSİYON "MANUAL" DEĞİLSE, ÖNCE ONU DÜZELT ---
+        if (currentSortOrder !== 'MANUAL') {
+            console.log("Koleksiyon manuel modda değil, değiştiriliyor...");
+            
+            const updateCollectionMutation = `
+            mutation collectionUpdate($input: CollectionInput!) {
+                collectionUpdate(input: $input) {
+                    collection { sortOrder }
+                    userErrors { field message }
+                }
+            }
+            `;
+
+            await fetch(`https://${SHOPIFY_STORE_URL}/admin/api/2023-10/graphql.json`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN },
+                body: JSON.stringify({ 
+                    query: updateCollectionMutation, 
+                    variables: { input: { id: collectionId, sortOrder: "MANUAL" } } 
+                }),
+            });
+            console.log("Koleksiyon MANUAL moda alındı.");
+        }
+
+        // --- ADIM 2: İNDİRİM HESAPLAMA ---
         const products = rawProducts.map(({ node }) => {
             let price = parseFloat(node.priceRange?.minVariantPrice?.amount || 0);
-            
             let compareAtPrice = 0;
             if (node.compareAtPriceRange && node.compareAtPriceRange.minVariantCompareAtPrice) {
                 compareAtPrice = parseFloat(node.compareAtPriceRange.minVariantCompareAtPrice.amount);
             }
 
-            // --- AKILLI FİYAT DÜZELTME ---
-            // Fiyat, karşılaştırma fiyatından aşırı büyükse (örn: 134900 vs 1799), 100'e böl.
+            // Fiyat düzeltme (134900 hatası için)
             if (compareAtPrice > 0 && price > compareAtPrice * 2) {
                 const correctedPrice = price / 100;
-                if (correctedPrice < compareAtPrice) {
-                    price = correctedPrice;
-                }
+                if (correctedPrice < compareAtPrice) price = correctedPrice;
             }
 
-            if (!compareAtPrice || compareAtPrice === 0) {
-                compareAtPrice = price;
-            }
+            if (!compareAtPrice || compareAtPrice === 0) compareAtPrice = price;
 
             let discountPercentage = 0;
             if (compareAtPrice > price) {
                 discountPercentage = Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
             }
 
-            return { id: node.id, discount: discountPercentage, title: node.title };
+            return { id: node.id, discount: discountPercentage };
         });
 
-        // --- SIRALAMA MANTIĞI ---
-        // Büyükten küçüğe sırala. İndirimi olmayanlar (0) en sona düşer.
+        // Sıralama (Büyükten küçüğe)
         const sortedProducts = products.sort((a, b) => b.discount - a.discount);
 
-        console.log("En Yüksek 5 İndirim:", sortedProducts.slice(0, 5).map(p => `%${p.discount}`));
-        console.log("En Düşük 5 İndirim:", sortedProducts.slice(-5).map(p => `%${p.discount}`));
-
-        // --- GÜVENLİK KONTROLÜ KALDIRILDI ---
-        // Artık "indirim yoksa dur" demiyoruz. Sıralamayı her türlü gönderiyoruz.
-        
+        // --- ADIM 3: YENİ SIRALAMAYI GÖNDER ---
         const moves = sortedProducts.map((product, index) => ({
             id: product.id,
             newPosition: index.toString()
         }));
 
-        console.log(`Shopify'a ${moves.length} adet ürün için yeni sıralama gönderiliyor...`);
+        console.log(`Sıralama gönderiliyor (${moves.length} ürün)...`);
 
         const reorderMutation = `
         mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) {
@@ -130,11 +136,10 @@ module.exports = async (req, res) => {
 
         const reorderJson = await reorderResponse.json();
         
-        // Hata kontrolü
         if (reorderJson.data?.collectionReorderProducts?.userErrors?.length > 0) {
-            console.error("Shopify Sıralama Hatası:", reorderJson.data.collectionReorderProducts.userErrors);
+            console.error("HATA:", reorderJson.data.collectionReorderProducts.userErrors);
         } else {
-            console.log("Sıralama Başarıyla Gönderildi!");
+            console.log("İşlem Başarılı!");
         }
 
         res.status(200).json({ ok: true, moved: moves.length, shopifyResponse: reorderJson });
